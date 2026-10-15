@@ -74,7 +74,7 @@ const OP = {
   OT_ACTIVA: 'OT activa',
   MIS_OT: 'Mis OT activas',
   EDITAR: '✏️ Editar datos',
-  ALERTAS: '🔔 Alertas de cobertura',
+  ALERTAS: '🔥 Clientes recuperables',
   ESCALAR: 'Escalamiento',
 };
 const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
@@ -85,7 +85,7 @@ const INTENCIONES = [
   ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
   ['resumen_mes', /resumen\s+del\s+mes|como\s+voy\s+(en\s+)?(el|este)\s+mes|numeros\s+del\s+mes|en\s+el\s+mes/],
   ['resumen_equipo', /resumen\s+(del|de\s+todo\s+el)\s+equipo|como\s+va\s+el\s+equipo|numeros\s+del\s+equipo/],
-  ['alertas', /alerta|confirmo\s+cobertura|si\s+tenia\s+cobertura/],
+  ['alertas', /alerta|recuperable|confirmo\s+cobertura|si\s+tenia\s+cobertura/],
   ['resumen', /resumen|consolid|como\s+voy|mis\s+numeros|cuant[oa]s\s+(llevo|tengo|van|ventas|interesados)/],
   ['venta', /registrar\s+(la\s+|una\s+)?venta|(es|fue|hubo|cerre|cerramos|se\s+hizo)\s+(una\s+)?venta|^venta$|ya\s+compro|acepto\s+la\s+oferta/],
   ['no_venta', /no\s+se\s+intereso|no\s+le\s+intereso|no\s+(esta|estuvo)\s+interesad|^no\s+venta$|no\s+quiso|rechazo/],
@@ -253,7 +253,7 @@ function tarjetaDe(c) {
     ['Cobertura', (cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar') + textoAuditoria(c)],
     ['Registrado', fecha],
   ];
-  if (alertaCobertura(c)) detalles.unshift(['🔔 Alerta', 'El back confirmó que SÍ tiene cobertura — vuelve a llamarlo']);
+  if (alertaCobertura(c)) detalles.unshift(['🔥 Recuperable', 'El back confirmó que SÍ tiene cobertura — vuelve a llamarlo']);
   if (c.venta) {
     const v = c.venta;
     if (v.datos?.registrada_el && v.created_at) {
@@ -861,13 +861,13 @@ async function misAlertas(sesion, asesor) {
   }
   if (!lista.length) {
     sesion.modo = 'libre';
-    return { reply: 'No tienes alertas de cobertura. 🙌', opciones: MENU };
+    return { reply: 'No tienes clientes recuperables por ahora. 🙌', opciones: MENU };
   }
   sesion.modo = 'seleccion';
   sesion.resultados = lista;
   return {
-    reply: `🔔 El back confirmó que **${lista.length}** cliente(s) que marcaste **sin cobertura** SÍ tienen. ¡Es una venta por recuperar! Vuelve a llamarlos. Toca uno para abrir la ficha 👇`,
-    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, horaCorta: '🔔 Sí tiene cobertura', elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    reply: `🔥 ¡Clientes recuperables! El back confirmó que **${lista.length}** cliente(s) que marcaste **sin cobertura** SÍ tienen. ¡Es una venta por recuperar! Vuelve a llamarlos. Toca uno para abrir la ficha 👇`,
+    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, horaCorta: '🔥 Sí tiene cobertura', elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
     opciones: [OP.CANCELAR],
   };
 }
@@ -979,7 +979,7 @@ async function manejar(sesion, asesor, texto) {
       const otLib = (await db.otActivasDeAsesor(asesor)).filter((c) => c.ot_activa_estado === 'liberada' && Date.now() - new Date(c.ot_activa_liberada_fecha).getTime() < 2 * 86400000).length;
       if (otLib) aviso += `\n\n🧾 **${otLib}** cliente(s) con OT activa ya quedaron **liberados**. Mira la pestaña "OT" y retoma la venta.`;
       const alertas = (await alertasDe(asesor)).length;
-      if (alertas) aviso += `\n\n🔔 **${alertas}** cliente(s) que marcaste sin cobertura **SÍ tienen** según el back. Toca "${OP.ALERTAS}".`;
+      if (alertas) aviso += `\n\n🔥 **${alertas}** cliente(s) que marcaste sin cobertura **SÍ tienen** según el back. Toca "${OP.ALERTAS}".`;
       if (nuevas) aviso += `\n\n🎉 ¡Buenas noticias! **${nuevas}** de tus ventas quedó(aron) **instalada(s)**. Mira la pestaña "Ventas".`;
     } catch (_) {}
     return {
@@ -988,7 +988,7 @@ async function manejar(sesion, asesor, texto) {
         'Cuando tengas un interesado dime "tengo un cliente interesado" y lo registramos. ' +
         'También puedo buscar un cliente (por nombre, celular o cédula), registrar la venta, ' +
         'programar una rellamada, ayudarte con objeciones o darte el resumen del día.' + aviso,
-      opciones: /🔔/.test(aviso) ? [OP.ALERTAS, ...MENU] : MENU,
+      opciones: /🔥/.test(aviso) ? [OP.ALERTAS, ...MENU] : MENU,
     };
   }
   if (t === '__nuevo__') {
