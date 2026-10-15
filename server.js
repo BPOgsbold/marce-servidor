@@ -187,6 +187,7 @@ function tarjetaDe(c) {
     : '';
   const cob = norm(c.cobertura_validada);
   const detalles = [
+    ['Gestiona', c.asesor],
     ['Teléfono', c.telefono],
     ['Dirección', [c.direccion, c.ciudad].filter(Boolean).join(' · ')],
     ['Cobertura', (cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar') + textoAuditoria(c)],
@@ -387,7 +388,7 @@ async function responderCaptura(sesion, asesor, texto) {
         sesion.modo = 'duplicado';
         sesion.resultados = previos;
         return {
-          reply: `👀 Ojo: ese celular ya está registrado. ¿Es el mismo cliente?`,
+          reply: avisoDuplicado(previos, asesor),
           tarjetas: previos.map(tarjetaDe),
           opciones: ['Sí, es el mismo', 'No, es otro cliente'],
         };
@@ -545,6 +546,24 @@ async function ejecutarBusqueda(sesion, termino) {
   };
 }
 
+// "Ojo: este cliente lo está gestionando Ana Torres…"
+const mismoAsesor = (a, b) => norm(a) === norm(b);
+function quienGestiona(c) {
+  const fecha = c.created_at
+    ? new Date(c.created_at).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short' })
+    : '';
+  const estado = (ESTADOS[c.resultado] || 'En gestión').toLowerCase();
+  return `**${c.asesor || 'otro asesor'}**${fecha ? ` (lo registró el ${fecha})` : ''} · estado: ${estado}`;
+}
+function avisoDuplicado(previos, asesor) {
+  const deOtros = previos.filter((c) => c.asesor && !mismoAsesor(c.asesor, asesor));
+  if (!deOtros.length) return '👀 Ojo: ese celular ya lo registraste antes. ¿Es el mismo cliente?';
+  const c = deOtros[0];
+  let txt = `⚠️ Ojo: este cliente ya lo está gestionando ${quienGestiona(c)}.`;
+  if (c.resultado === 'venta') txt += '\n\nYa tiene una **venta registrada** por ese asesor.';
+  return txt + '\n\n¿Es el mismo cliente?';
+}
+
 async function abrirCliente(sesion, cliente) {
   sesion.cliente = cliente;
   sesion.modo = 'libre';
@@ -555,8 +574,11 @@ async function abrirCliente(sesion, cliente) {
     const inicio = await arrancarAccion(sesion, pendiente);
     return { ...inicio, tarjetas: [tarjetaDe(cliente)], reply: inicio.reply };
   }
+  const otro = cliente.asesor && asesorActual && !mismoAsesor(cliente.asesor, asesorActual);
   return {
-    reply: `Este es el cliente${cliente.resultado === 'venta' ? ' — ya tiene venta registrada ✅' : ''}. ¿Qué hacemos?`,
+    reply:
+      (otro ? `⚠️ Este cliente lo está gestionando ${quienGestiona(cliente)}.\n\n` : '') +
+      `Este es el cliente${cliente.resultado === 'venta' ? ' — ya tiene venta registrada ✅' : ''}. ¿Qué hacemos?`,
     tarjetas: [tarjetaDe(cliente)],
     opciones: accionesPara(cliente),
   };
