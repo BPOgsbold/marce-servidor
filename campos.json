@@ -86,9 +86,11 @@
     {
       "id": "fecha_agenda",
       "label": "Fecha de instalación",
-      "prompt": "¿Para qué fecha quedó agendada la instalación? (DD/MM/AAAA)",
+      "prompt": "¿Para qué fecha quedó agendada la instalación? Elige la fecha en el calendario 📅",
       "regex": "^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$",
-      "errorMessage": "Usa el formato DD/MM/AAAA, por ejemplo 18/10/2026."
+      "errorMessage": "Usa el formato DD/MM/AAAA, por ejemplo 18/10/2026.",
+      "entrada": "fecha",
+      "formato": "dmy"
     },
     {
       "id": "hora_agenda",
@@ -151,29 +153,30 @@
     {
       "id": "rellamar_fecha",
       "label": "Fecha",
-      "prompt": "📞 Listo. ¿Para cuándo quedó la nueva llamada? (hoy, mañana, el viernes o una fecha como 20/10)",
+      "prompt": "📞 Listo. ¿Para cuándo quedó la nueva llamada? Elige la fecha en el calendario 📅 o toca un botón.",
       "tipo": "fecha_futura",
       "opcionesSugeridas": [
         "Hoy",
         "Mañana",
         "Pasado mañana"
       ],
-      "errorMessage": "No entendí la fecha. Escribe hoy, mañana, un día (ej. viernes) o una fecha como 20/10."
+      "errorMessage": "No entendí la fecha. Escribe hoy, mañana, un día (ej. viernes) o una fecha como 20/10.",
+      "entrada": "fecha",
+      "formato": "iso"
     },
     {
       "id": "rellamar_hora",
       "label": "Hora",
-      "prompt": "¿A qué hora lo llamamos?",
+      "prompt": "¿A qué hora lo llamamos? Elige la hora 🕑 o toca un botón.",
       "regex": "^.{1,}$",
       "opcionesSugeridas": [
         "8:00 a. m.",
         "10:00 a. m.",
-        "12:00 m.",
         "2:00 p. m.",
-        "4:00 p. m.",
-        "6:00 p. m."
+        "4:00 p. m."
       ],
-      "errorMessage": "Escribe la hora, por ejemplo 3:30 p. m."
+      "errorMessage": "Escribe la hora, por ejemplo 3:30 p. m.",
+      "entrada": "hora"
     },
     {
       "id": "rellamar_nota",

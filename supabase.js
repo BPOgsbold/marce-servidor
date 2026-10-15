@@ -180,6 +180,23 @@ async function rellamadasPendientes(asesor) {
   return adjuntarVentas(data || []);
 }
 
+/** Escalamientos del asesor: todos los pendientes + resueltos de los últimos 7 días. */
+async function escalamientosDeAsesor(asesor) {
+  const supabase = getClient();
+  const hace7 = new Date(Date.now() - 7 * 86400000).toISOString();
+  let q = supabase
+    .from('interesados')
+    .select('*')
+    .not('escalamiento_tipo', 'is', null)
+    .or(`escalamiento_estado.eq.pendiente,escalamiento_resuelto_fecha.gte.${hace7}`)
+    .order('escalamiento_fecha', { ascending: false })
+    .limit(40);
+  if (asesor) q = q.eq('asesor', asesor);
+  const { data, error } = await q;
+  if (error) throw error;
+  return adjuntarVentas(data || []);
+}
+
 /** Números de hoy. Si se pasa asesor, solo los de ese asesor. */
 async function resumenDeHoy(asesor) {
   const supabase = getClient();
@@ -276,4 +293,5 @@ module.exports = {
   resumenDeHoy,
   clientesDeHoy,
   rellamadasPendientes,
+  escalamientosDeAsesor,
 };

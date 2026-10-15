@@ -51,7 +51,8 @@ const OP = {
   CANCELAR: 'Cancelar',
   HOY: 'Mis clientes de hoy',
   RELLAMAR: 'Volver a llamar',
-  RELLAMADAS: 'Mis rellamadas',
+  RELLAMADAS: 'Mis volver a llamar',
+  ESCALAMIENTOS: 'Mis escalamientos',
   ESCALAR: 'Escalamiento',
 };
 const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
@@ -65,8 +66,9 @@ const INTENCIONES = [
   ['venta', /registrar\s+(la\s+|una\s+)?venta|(es|fue|hubo|cerre|cerramos|se\s+hizo)\s+(una\s+)?venta|^venta$|ya\s+compro|acepto\s+la\s+oferta/],
   ['no_venta', /no\s+se\s+intereso|no\s+le\s+intereso|no\s+(esta|estuvo)\s+interesad|^no\s+venta$|no\s+quiso|rechazo/],
   ['cobertura', /(actualizar|cambiar|corregir)\s+(la\s+)?cobertura/],
+  ['escalamientos', /mis\s+escalamientos|escalamientos\s+pendientes|como\s+van\s+(mis\s+)?escalamientos/],
   ['escalar', /escalar|escalamiento|escalacion|crear\s+(la\s+)?direccion|validar\s+(la\s+)?cedula|cartera|factibilidad/],
-  ['rellamadas', /mis\s+rellamadas|rellamadas\s+(de\s+hoy|pendientes)|a\s+quien\s+(debo|tengo\s+que)\s+(volver\s+a\s+)?llamar|^rellamadas$|pendientes\s+por\s+llamar/],
+  ['rellamadas', /mis\s+volver\s+a\s+llamar|mis\s+rellamadas|rellamadas\s+(de\s+hoy|pendientes)|a\s+quien\s+(debo|tengo\s+que)\s+(volver\s+a\s+)?llamar|^rellamadas$|pendientes\s+por\s+llamar/],
   ['rellamar', /volver\s+a\s+llamar|rellamar|reprogramar|agendar\s+(una\s+)?(llamada|rellamada)|llamar\s+(despues|mas\s+tarde|otro\s+dia|manana)/],
   ['nuevo', /(tengo|hay|tenemos)\s+(un|una)?\s*(cliente|persona|prospecto)?\s*(interesad|nuev)|cliente\s+interesad|nuevo\s+(interesado|prospecto|cliente)|registrar\s+(un\s+)?interesado/],
   ['buscar', /^(buscar|busca|buscame|consultar|consulta)\b|buscar\s+(a|al|el|la)?\s*cliente|(info|informacion|datos|estado|ficha)\s+(de|del)\s+|como\s+va\s+(el|la)?\s*cliente|ya\s+(fue|esta)\s+(registrad|atendid)/],
@@ -126,7 +128,8 @@ function validarFechaFutura(crudo) {
   const t = norm(crudo).replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
   const hoy = hoyCO();
   let iso = null;
-  if (/^hoy\b/.test(t)) iso = hoy;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) iso = t;
+  else if (/^hoy\b/.test(t)) iso = hoy;
   else if (/^pasado\s*manana/.test(t)) iso = sumarDias(hoy, 2);
   else if (/^manana/.test(t)) iso = sumarDias(hoy, 1);
   else if (/^en\s+(\d{1,2})\s+dias?/.test(t)) iso = sumarDias(hoy, parseInt(t.match(/^en\s+(\d{1,2})/)[1], 10));
@@ -218,6 +221,7 @@ function preguntar(campo, cap) {
   };
   const ops = campo.opciones || campo.opcionesSugeridas;
   if (ops) resp.opciones = [...ops];
+  if (campo.entrada) resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
   return resp;
 }
 const TITULOS = { interesado: 'Nuevo interesado', venta: 'Registro de venta', no_venta: 'No se interesó', cobertura: 'Cobertura', rellamar: 'Volver a llamar', escalamiento: 'Escalamiento' };
@@ -592,6 +596,27 @@ async function misRellamadas(sesion, asesor) {
   };
 }
 
+async function misEscalamientos(sesion, asesor) {
+  let lista;
+  try {
+    lista = await db.escalamientosDeAsesor(asesor);
+  } catch (e) {
+    return { reply: `No pude traer los escalamientos (${e.message}).`, error: true };
+  }
+  if (!lista.length) {
+    sesion.modo = 'libre';
+    return { reply: 'No tienes escalamientos. 🙌', opciones: MENU };
+  }
+  const pend = lista.filter((c) => c.escalamiento_estado !== 'resuelto').length;
+  sesion.modo = 'seleccion';
+  sesion.resultados = lista;
+  return {
+    reply: `🛠 Tienes **${pend}** escalamiento(s) pendiente(s) y ${lista.length - pend} resuelto(s) recientemente. Toca uno para abrir la ficha 👇`,
+    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, horaCorta: c.escalamiento_estado === 'resuelto' ? '✅ resuelto' : '⏳ pendiente', elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    opciones: [OP.CANCELAR],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Resumen
 // ---------------------------------------------------------------------------
@@ -682,6 +707,17 @@ async function manejar(sesion, asesor, texto) {
     return { ...iniciarCaptura(sesion, 'interesado'), reply: '¡Vamos! 🙌 ' + CAMPOS().interesado[0].prompt };
   }
 
+  // Abrir un cliente directo (desde las pestañas "Volver a llamar" / "Escalamientos" de la ventana)
+  if (t.startsWith('__abrir__:')) {
+    try {
+      const cliente = await db.obtenerCliente(t.slice('__abrir__:'.length));
+      sesion.captura = null;
+      return abrirCliente(sesion, cliente);
+    } catch (e) {
+      return { reply: `No pude abrir ese cliente (${e.message}).`, error: true, opciones: MENU };
+    }
+  }
+
   const intencion = detectarIntencion(t);
 
   if (intencion === 'cancelar') {
@@ -698,7 +734,7 @@ async function manejar(sesion, asesor, texto) {
     const campo = cap.campos[cap.paso];
     const esOpcion = (campo.opciones || campo.opcionesSugeridas || []).some((o) => norm(o) === n);
     // Saltos explícitos de flujo (solo frases claras, para no confundir datos con comandos)
-    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas'].includes(intencion) && n.split(' ').length <= 6) {
+    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos'].includes(intencion) && n.split(' ').length <= 6) {
       const titulo = TITULOS[cap.tipo];
       return {
         reply: `Estamos en medio de "${titulo}". ¿Lo dejamos y seguimos con lo otro?`,
@@ -774,6 +810,7 @@ async function manejar(sesion, asesor, texto) {
     };
   }
   if (intencion === 'rellamadas') return misRellamadas(sesion, asesor);
+  if (intencion === 'escalamientos') return misEscalamientos(sesion, asesor);
   if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar') {
     if (!sesion.cliente) {
       sesion.accionPendiente = intencion;
@@ -796,6 +833,44 @@ async function manejar(sesion, asesor, texto) {
 // Rutas
 // ---------------------------------------------------------------------------
 app.get('/api/health', (req, res) => res.json({ ok: true, ia: iaDisponible() }));
+
+// Pestañas de la ventana: "Volver a llamar" y "Escalamientos" del asesor.
+app.get('/api/mis-pendientes', async (req, res) => {
+  try {
+    const asesor = String(req.query.asesor || '').trim();
+    if (!asesor) return res.status(400).json({ error: 'Falta el asesor' });
+    const [rell, escs] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor)]);
+    const hoy = hoyCO();
+    const corto = (c) => ({
+      id: c.id,
+      nombre: c.nombre_cliente || 'Sin nombre',
+      telefono: c.telefono,
+      direccion: [c.direccion, c.ciudad].filter(Boolean).join(' · '),
+    });
+    res.json({
+      hoy,
+      rellamadas: rell.map((c) => ({
+        ...corto(c),
+        fecha: c.rellamar_fecha,
+        cuando: textoRellamada(c),
+        nota: c.rellamar_nota && norm(c.rellamar_nota) !== 'ninguna' ? c.rellamar_nota : '',
+        grupo: c.rellamar_fecha < hoy ? 'atrasada' : c.rellamar_fecha === hoy ? 'hoy' : 'proxima',
+      })),
+      escalamientos: escs.map((c) => ({
+        ...corto(c),
+        tipo: c.escalamiento_tipo,
+        detalle: c.escalamiento_detalle,
+        estado: c.escalamiento_estado === 'resuelto' ? 'resuelto' : 'pendiente',
+        respuesta: c.escalamiento_respuesta,
+        por: c.escalamiento_por,
+        fecha: c.escalamiento_fecha,
+      })),
+    });
+  } catch (err) {
+    console.error('Error mis-pendientes:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Panel web (back office). Protegido con la clave PANEL_CLAVE de Render.
