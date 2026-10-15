@@ -197,6 +197,24 @@ async function escalamientosDeAsesor(asesor) {
   return adjuntarVentas(data || []);
 }
 
+/** Ventas del asesor de los últimos 45 días (con su estado de instalación). */
+async function ventasDeAsesor(asesor) {
+  const supabase = getClient();
+  const desde = new Date(Date.now() - 45 * 86400000).toISOString();
+  let q = supabase.from('ventas').select('*').gte('created_at', desde).order('created_at', { ascending: false }).limit(80);
+  if (asesor) q = q.eq('asesor', asesor);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+async function actualizarVenta(id, cambios) {
+  const supabase = getClient();
+  const { data, error } = await supabase.from('ventas').update(cambios).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
+}
+
 /** Números de hoy. Si se pasa asesor, solo los de ese asesor. */
 async function resumenDeHoy(asesor) {
   const supabase = getClient();
@@ -268,7 +286,14 @@ async function panelDatos(desde, hasta) {
     .order('escalamiento_fecha', { ascending: false })
     .limit(3000);
   if (eE) throw eE;
-  return { interesados: conVenta, ventas, rellamadas: rell || [], escalamientos: esc || [] };
+  const { data: vPend, error: eV } = await supabase
+    .from('ventas')
+    .select('*')
+    .or('estado_instalacion.is.null,estado_instalacion.eq.pendiente')
+    .order('created_at', { ascending: false })
+    .limit(3000);
+  if (eV) throw eV;
+  return { interesados: conVenta, ventas, rellamadas: rell || [], escalamientos: esc || [], ventasPendientes: vPend || [] };
 }
 
 /** Registra la auditoría de cobertura hecha por el back office. */
@@ -294,4 +319,6 @@ module.exports = {
   clientesDeHoy,
   rellamadasPendientes,
   escalamientosDeAsesor,
+  ventasDeAsesor,
+  actualizarVenta,
 };

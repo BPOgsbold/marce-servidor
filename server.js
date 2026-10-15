@@ -53,6 +53,7 @@ const OP = {
   RELLAMAR: 'Volver a llamar',
   RELLAMADAS: 'Mis volver a llamar',
   ESCALAMIENTOS: 'Mis escalamientos',
+  VENTAS: 'Mis ventas',
   ESCALAR: 'Escalamiento',
 };
 const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
@@ -66,6 +67,7 @@ const INTENCIONES = [
   ['venta', /registrar\s+(la\s+|una\s+)?venta|(es|fue|hubo|cerre|cerramos|se\s+hizo)\s+(una\s+)?venta|^venta$|ya\s+compro|acepto\s+la\s+oferta/],
   ['no_venta', /no\s+se\s+intereso|no\s+le\s+intereso|no\s+(esta|estuvo)\s+interesad|^no\s+venta$|no\s+quiso|rechazo/],
   ['cobertura', /(actualizar|cambiar|corregir)\s+(la\s+)?cobertura/],
+  ['misventas', /mis\s+ventas|ventas\s+(del\s+mes|instaladas|pendientes)|como\s+van\s+mis\s+ventas|instalacion(es)?\s+pendientes/],
   ['escalamientos', /mis\s+escalamientos|escalamientos\s+pendientes|como\s+van\s+(mis\s+)?escalamientos/],
   ['escalar', /escalar|escalamiento|escalacion|crear\s+(la\s+)?direccion|validar\s+(la\s+)?cedula|cartera|factibilidad/],
   ['rellamadas', /mis\s+volver\s+a\s+llamar|mis\s+rellamadas|rellamadas\s+(de\s+hoy|pendientes)|a\s+quien\s+(debo|tengo\s+que)\s+(volver\s+a\s+)?llamar|^rellamadas$|pendientes\s+por\s+llamar/],
@@ -156,6 +158,16 @@ function validarFechaFutura(crudo) {
   return { ok: true, valor: iso };
 }
 
+// Estado de instalación de una venta (lo marca el back office en el panel).
+function textoInstalacion(v) {
+  const fecha = v.instalacion_fecha
+    ? ' · ' + new Date(v.instalacion_fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short' })
+    : '';
+  if (v.estado_instalacion === 'instalada') return '✅ Instalada' + fecha;
+  if (v.estado_instalacion === 'no_instalada') return '❌ No instalada' + fecha;
+  return '⏳ Pendiente de instalación';
+}
+
 // Lo que el back office dijo sobre la cobertura (auditoría desde el panel).
 function textoAuditoria(c) {
   if (c.auditoria_cobertura === 'confirmada') return ' · ✅ auditada';
@@ -177,7 +189,9 @@ function tarjetaDe(c) {
   if (c.venta) {
     const v = c.venta;
     detalles.push(['Cédula', v.cedula], ['Plan', v.plan], ['OT', v.numero_ot], ['Cuenta', v.numero_cuenta]);
-    detalles.push(['Instalación', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
+    detalles.push(['Agenda', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
+    detalles.push(['Instalación', textoInstalacion(v)]);
+    if (v.instalacion_nota) detalles.push(['Nota instalación', v.instalacion_nota]);
   }
   if (c.resultado === 'no_venta' && c.motivo_no_interes) detalles.push(['Motivo', c.motivo_no_interes]);
   if (c.escalamiento_tipo) {
@@ -604,6 +618,42 @@ async function misRellamadas(sesion, asesor) {
   };
 }
 
+// Las ventas se muestran como "clientes" (con su venta adentro) para poder abrir la ficha.
+const ventaComoCliente = (v) => ({
+  id: v.interesado_id || v.id,
+  nombre_cliente: v.nombre_cliente,
+  telefono: v.telefono,
+  direccion: v.direccion,
+  ciudad: v.ciudad,
+  asesor: v.asesor,
+  created_at: v.created_at,
+  resultado: 'venta',
+  venta: v,
+});
+
+async function misVentas(sesion, asesor) {
+  let ventas;
+  try {
+    ventas = await db.ventasDeAsesor(asesor);
+  } catch (e) {
+    return { reply: `No pude traer tus ventas (${e.message}).`, error: true };
+  }
+  if (!ventas.length) {
+    sesion.modo = 'libre';
+    return { reply: 'Todavía no tienes ventas registradas en los últimos 45 días. ¡La primera está cerca! 💪', opciones: MENU };
+  }
+  const inst = ventas.filter((v) => v.estado_instalacion === 'instalada').length;
+  const pend = ventas.filter((v) => !v.estado_instalacion || v.estado_instalacion === 'pendiente').length;
+  const lista = ventas.map(ventaComoCliente);
+  sesion.modo = 'seleccion';
+  sesion.resultados = lista;
+  return {
+    reply: `🎉 Tus ventas (últimos 45 días): **${ventas.length}** · ✅ ${inst} instalada(s) · ⏳ ${pend} pendiente(s). Toca una para ver la ficha 👇`,
+    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, horaCorta: textoInstalacion(c.venta), elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    opciones: [OP.CANCELAR],
+  };
+}
+
 async function misEscalamientos(sesion, asesor) {
   let lista;
   try {
@@ -701,7 +751,10 @@ async function manejar(sesion, asesor, texto) {
     let aviso = '';
     try {
       const pend = (await db.rellamadasPendientes(asesor)).filter((c) => c.rellamar_fecha <= hoyCO()).length;
-      if (pend) aviso = `\n\n📞 Ojo: tienes **${pend}** rellamada(s) para hoy. Toca "Mis rellamadas".`;
+      if (pend) aviso = `\n\n📞 Ojo: tienes **${pend}** rellamada(s) para hoy. Mírala(s) en la pestaña "Volver a llamar".`;
+      const hace2 = Date.now() - 2 * 86400000;
+      const nuevas = (await db.ventasDeAsesor(asesor)).filter((v) => v.estado_instalacion === 'instalada' && new Date(v.instalacion_fecha).getTime() > hace2).length;
+      if (nuevas) aviso += `\n\n🎉 ¡Buenas noticias! **${nuevas}** de tus ventas quedó(aron) **instalada(s)**. Mira la pestaña "Ventas".`;
     } catch (_) {}
     return {
       reply:
@@ -738,13 +791,19 @@ async function manejar(sesion, asesor, texto) {
     return { reply: habia ? 'Listo, lo dejamos ahí. ¿Qué sigue?' : '¿En qué te ayudo?', opciones: sesion.cliente ? accionesPara(sesion.cliente) : MENU };
   }
 
+  // Formulario a medias que ya no existe (cambió la configuración): se descarta sin error.
+  if (sesion.modo === 'captura' && !sesion.captura?.campos?.[sesion.captura.paso]) {
+    sesion.modo = 'libre';
+    sesion.captura = null;
+  }
+
   // --- Respondiendo un formulario ---
   if (sesion.modo === 'captura') {
     const cap = sesion.captura;
     const campo = cap.campos[cap.paso];
     const esOpcion = (campo.opciones || campo.opcionesSugeridas || []).some((o) => norm(o) === n);
     // Saltos explícitos de flujo (solo frases claras, para no confundir datos con comandos)
-    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos'].includes(intencion) && n.split(' ').length <= 6) {
+    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos', 'misventas'].includes(intencion) && n.split(' ').length <= 6) {
       const titulo = TITULOS[cap.tipo];
       return {
         reply: `Estamos en medio de "${titulo}". ¿Lo dejamos y seguimos con lo otro?`,
@@ -821,6 +880,7 @@ async function manejar(sesion, asesor, texto) {
   }
   if (intencion === 'rellamadas') return misRellamadas(sesion, asesor);
   if (intencion === 'escalamientos') return misEscalamientos(sesion, asesor);
+  if (intencion === 'misventas') return misVentas(sesion, asesor);
   if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar') {
     if (!sesion.cliente) {
       sesion.accionPendiente = intencion;
@@ -849,7 +909,7 @@ app.get('/api/mis-pendientes', async (req, res) => {
   try {
     const asesor = String(req.query.asesor || '').trim();
     if (!asesor) return res.status(400).json({ error: 'Falta el asesor' });
-    const [rell, escs] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor)]);
+    const [rell, escs, vts] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor), db.ventasDeAsesor(asesor)]);
     const hoy = hoyCO();
     const corto = (c) => ({
       id: c.id,
@@ -874,6 +934,20 @@ app.get('/api/mis-pendientes', async (req, res) => {
         respuesta: c.escalamiento_respuesta,
         por: c.escalamiento_por,
         fecha: c.escalamiento_fecha,
+      })),
+      ventas: vts.map((v) => ({
+        id: v.interesado_id || v.id,
+        nombre: v.nombre_cliente || 'Sin nombre',
+        telefono: v.telefono,
+        direccion: [v.direccion, v.ciudad].filter(Boolean).join(' · '),
+        plan: v.plan,
+        ot: v.numero_ot,
+        agenda: [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · '),
+        estado: v.estado_instalacion || 'pendiente',
+        estadoTexto: textoInstalacion(v),
+        nota: v.instalacion_nota,
+        instaladaReciente: v.estado_instalacion === 'instalada' && Date.now() - new Date(v.instalacion_fecha).getTime() < 2 * 86400000,
+        fecha: v.created_at,
       })),
     });
   } catch (err) {
@@ -911,6 +985,23 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
     res.json(await db.panelDatos(desde, hasta));
   } catch (err) {
     console.error('Error panel/datos:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/panel/instalacion', exigirClave, async (req, res) => {
+  try {
+    const { id, estado, nota, auditor } = req.body || {};
+    if (!id || !['instalada', 'no_instalada', 'pendiente'].includes(estado)) return res.status(400).json({ error: 'Falta id o el estado no es válido.' });
+    const venta = await db.actualizarVenta(id, {
+      estado_instalacion: estado,
+      instalacion_nota: nota || null,
+      instalacion_por: estado === 'pendiente' ? null : auditor || null,
+      instalacion_fecha: estado === 'pendiente' ? null : new Date().toISOString(),
+    });
+    res.json({ ok: true, venta });
+  } catch (err) {
+    console.error('Error panel/instalacion:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -960,7 +1051,8 @@ function hidratar(estado) {
   const sesion = { ...nuevaSesion(), ...estado };
   if (sesion.captura) {
     const campos = CAMPOS()[sesion.captura.tipo];
-    if (!campos) sesion.captura = null;
+    // Si el formulario cambió o quedó vacío (ej. "no_venta" ya no pide datos), se descarta.
+    if (!Array.isArray(campos) || !campos.length) sesion.captura = null;
     else sesion.captura = { ...sesion.captura, campos, paso: Math.min(sesion.captura.paso || 0, campos.length - 1) };
   }
   if (sesion.modo === 'captura' && !sesion.captura) sesion.modo = 'libre';
