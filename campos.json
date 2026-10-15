@@ -100,7 +100,7 @@
     {
       "id": "fecha_agenda",
       "label": "Fecha de instalación",
-      "prompt": "¿Para qué fecha quedó agendada la instalación? Elige la fecha en el calendario 📅",
+      "prompt": "¿Para qué fecha quedó agendada la instalación? Elígela en el calendario 📅 (si es de días anteriores — backlog — también la puedes escoger).",
       "regex": "^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$",
       "errorMessage": "Usa el formato DD/MM/AAAA, por ejemplo 18/10/2026.",
       "entrada": "fecha",

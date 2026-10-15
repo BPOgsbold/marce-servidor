@@ -280,7 +280,8 @@ function tarjetaDe(c) {
     detalles.push(['📞 Volver a llamar', textoRellamada(c)]);
     if (c.rellamar_nota && norm(c.rellamar_nota) !== 'ninguna') detalles.push(['Nota', c.rellamar_nota]);
   }
-  if (c.observaciones && norm(c.observaciones) !== 'ninguna') detalles.push(['Observaciones', c.observaciones]);
+  const obs = c.venta?.observaciones || c.observaciones;
+  if (obs && norm(obs) !== 'ninguna') detalles.push(['📝 Observaciones', obs]);
   const estado = c.resultado || 'en_gestion';
   const horaCorta = c.created_at
     ? new Date(c.created_at).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: 'numeric', minute: '2-digit' })
@@ -317,11 +318,12 @@ function campoEditable(id) {
   return { ...def, prompt: `✏️ Escribe el nuevo dato de **${def.label.toLowerCase()}**:`, opcionesSugeridas: undefined };
 }
 function editablesPara(c) {
-  const ids = [...EDITABLES_INTERESADO, ...(c?.venta ? EDITABLES_VENTA : [])];
+  const ids = [...EDITABLES_INTERESADO, ...(c?.venta ? EDITABLES_VENTA : ['observaciones'])];
   return ids.map(campoEditable).filter(Boolean);
 }
 function valorActual(c, id) {
   if (!c) return '';
+  if (id === 'observaciones') return c.venta?.observaciones || c.observaciones || '';
   if (EDITABLES_VENTA.includes(id)) return c.venta?.[id] || '';
   return c[id] || '';
 }
@@ -346,7 +348,8 @@ function preguntar(campo, cap) {
     resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
     if (campo.tipo === 'fecha_pasada') Object.assign(resp.entrada, { min: sumarDias(hoyCO(), -DIAS_ATRAS), max: hoyCO() });
     // Venta de un día anterior: la instalación pudo quedar agendada desde ese día.
-    if (campo.id === 'fecha_agenda' && cap.datos.fecha_venta && cap.datos.fecha_venta < hoyCO()) resp.entrada.min = cap.datos.fecha_venta;
+    // Fecha de instalación: se permite una fecha anterior a hoy (backlog), hasta 90 días atrás.
+    if (campo.id === 'fecha_agenda') resp.entrada.min = sumarDias(hoyCO(), -90);
   }
   return resp;
 }
@@ -555,7 +558,7 @@ async function finalizarCaptura(sesion, asesor) {
       const id = campoEditadoId || Object.keys(datos)[0];
       const valor = datos[id];
       const etiqueta = (campoEditable(id)?.label || id).toLowerCase();
-      if (EDITABLES_INTERESADO.includes(id)) await db.actualizarInteresado(c.id, { [id]: valor });
+      if (EDITABLES_INTERESADO.includes(id) || id === 'observaciones') await db.actualizarInteresado(c.id, { [id]: valor });
       if (c.venta && (EDITABLES_VENTA.includes(id) || EDITABLES_INTERESADO.includes(id))) await db.actualizarVenta(c.venta.id, { [id]: valor });
       sesion.cliente = await db.obtenerCliente(c.id);
       return {
@@ -1101,7 +1104,8 @@ async function manejar(sesion, asesor, texto) {
   if (intencion === 'menu') {
     sesion.modo = 'libre';
     sesion.accionPendiente = null;
-    return { reply: '¿Qué quieres hacer? 👇', opciones: MENU };
+    const saludo = /^(hola|holi|oli|ola|hey|buen|que mas|que hubo|quiubo|saludos)/.test(n);
+    return { reply: saludo ? `¡Hola${nombre ? `, ${nombre}` : ''}! 👋 ¿Qué quieres hacer?` : '¿Qué quieres hacer? 👇', opciones: MENU };
   }
   if (intencion === 'hoy') return clientesDeHoy(sesion, asesor);
   if (intencion === 'nuevo') {
