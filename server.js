@@ -57,6 +57,7 @@ const OP = {
   VENTAS: 'Mis ventas',
   OT_ACTIVA: 'OT activa',
   MIS_OT: 'Mis OT activas',
+  EDITAR: '✏️ Editar datos',
   ESCALAR: 'Escalamiento',
 };
 const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
@@ -76,6 +77,7 @@ const INTENCIONES = [
   ['misventas', /mis\s+ventas|ventas\s+(del\s+mes|instaladas|pendientes)|como\s+van\s+mis\s+ventas|instalacion(es)?\s+pendientes/],
   ['escalamientos', /mis\s+escalamientos|escalamientos\s+pendientes|como\s+van\s+(mis\s+)?escalamientos/],
   ['escalar', /escalar|escalamiento|escalacion|crear\s+(la\s+)?direccion|validar\s+(la\s+)?cedula|cartera|factibilidad/],
+  ['editar', /editar|corregir\s+(un\s+|el\s+|los\s+)?datos?|cambiar\s+(un\s+|el\s+|los\s+)?datos?|actualizar\s+(un\s+|el\s+|los\s+)?datos?|modificar|me\s+equivoque/],
   ['rellamadas', /mis\s+volver\s+a\s+llamar|mis\s+rellamadas|rellamadas\s+(de\s+hoy|pendientes)|a\s+quien\s+(debo|tengo\s+que)\s+(volver\s+a\s+)?llamar|^rellamadas$|pendientes\s+por\s+llamar/],
   ['rellamar', /volver\s+a\s+llamar|rellamar|reprogramar|agendar\s+(una\s+)?(llamada|rellamada)|llamar\s+(despues|mas\s+tarde|otro\s+dia|manana)/],
   ['nuevo', /(tengo|hay|tenemos)\s+(un|una)?\s*(cliente|persona|prospecto)?\s*(interesad|nuev)|cliente\s+interesad|nuevo\s+(interesado|prospecto|cliente)|registrar\s+(un\s+)?interesado/],
@@ -191,7 +193,7 @@ function tarjetaDe(c) {
     ['Teléfono', c.telefono],
     ['Dirección', [c.direccion, c.ciudad].filter(Boolean).join(' · ')],
     ['Cobertura', (cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar') + textoAuditoria(c)],
-    ['Registrado', [fecha, c.asesor].filter(Boolean).join(' · ')],
+    ['Registrado', fecha],
   ];
   if (c.venta) {
     const v = c.venta;
@@ -234,10 +236,41 @@ function tarjetaDe(c) {
 function accionesPara(c) {
   if (!c) return MENU;
   const sinCobertura = norm(c.cobertura_validada) === 'no';
-  if (c.resultado === 'venta') return [OP.BUSCAR, OP.NUEVO];
-  if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA];
-  if (sinCobertura) return [OP.COBERTURA, OP.ESCALAR, OP.NO_VENTA, OP.RELLAMAR];
-  return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA];
+  if (c.resultado === 'venta') return [OP.EDITAR, OP.BUSCAR, OP.NUEVO];
+  if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.EDITAR];
+  if (sinCobertura) return [OP.COBERTURA, OP.ESCALAR, OP.NO_VENTA, OP.RELLAMAR, OP.EDITAR];
+  return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.EDITAR];
+}
+
+// ---------------------------------------------------------------------------
+// Editar un dato de la ficha
+// ---------------------------------------------------------------------------
+// Datos que se pueden corregir: los del interesado siempre, los de la venta si tiene venta.
+const EDITABLES_INTERESADO = ['nombre_cliente', 'telefono', 'direccion', 'ciudad'];
+const EDITABLES_VENTA = ['cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+function campoEditable(id) {
+  const todos = [...(CAMPOS().interesado || []), ...(CAMPOS().venta || [])];
+  const def = todos.find((c) => c.id === id);
+  if (!def) return null;
+  return { ...def, prompt: `✏️ Escribe el nuevo dato de **${def.label.toLowerCase()}**:`, opcionesSugeridas: undefined };
+}
+function editablesPara(c) {
+  const ids = [...EDITABLES_INTERESADO, ...(c?.venta ? EDITABLES_VENTA : [])];
+  return ids.map(campoEditable).filter(Boolean);
+}
+function valorActual(c, id) {
+  if (!c) return '';
+  if (EDITABLES_VENTA.includes(id)) return c.venta?.[id] || '';
+  return c[id] || '';
+}
+function pedirQueEditar(sesion) {
+  const c = sesion.cliente;
+  if (!c) return { reply: 'Primero abre la ficha del cliente (búscalo por nombre o celular).', opciones: [OP.BUSCAR, OP.HOY] };
+  sesion.modo = 'editar_elegir';
+  return {
+    reply: `✏️ ¿Qué dato de **${c.nombre_cliente || 'este cliente'}** deseas actualizar?`,
+    opciones: [...editablesPara(c).map((f) => f.label), OP.CANCELAR],
+  };
 }
 
 function preguntar(campo, cap) {
@@ -250,7 +283,7 @@ function preguntar(campo, cap) {
   if (campo.entrada) resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
   return resp;
 }
-const TITULOS = { interesado: 'Nuevo interesado', venta: 'Registro de venta', no_venta: 'No se interesó', cobertura: 'Cobertura', rellamar: 'Volver a llamar', escalamiento: 'Escalamiento', ot_activa: 'OT activa' };
+const TITULOS = { interesado: 'Nuevo interesado', venta: 'Registro de venta', no_venta: 'No se interesó', cobertura: 'Cobertura', rellamar: 'Volver a llamar', escalamiento: 'Escalamiento', ot_activa: 'OT activa', editar: 'Editar dato' };
 
 const conCliente = (sesion) => (sesion.cliente ? ` de ${sesion.cliente.nombre_cliente}` : '');
 
@@ -405,6 +438,7 @@ async function responderCaptura(sesion, asesor, texto) {
 
 async function finalizarCaptura(sesion, asesor) {
   const { tipo, datos } = sesion.captura;
+  const campoEditadoId = sesion.captura.campoId;
   sesion.modo = 'libre';
   sesion.captura = null;
   try {
@@ -428,7 +462,7 @@ async function finalizarCaptura(sesion, asesor) {
       return {
         reply: '🎉 ¡Venta registrada! Excelente trabajo, así se hace.',
         tarjetas: [tarjetaDe(sesion.cliente)],
-        opciones: [OP.NUEVO, OP.RESUMEN],
+        opciones: [OP.NUEVO, OP.EDITAR, OP.RESUMEN],
         celebrar: true,
       };
     }
@@ -445,6 +479,19 @@ async function finalizarCaptura(sesion, asesor) {
         reply: 'Listo, quedó registrado. Ánimo, ¡el siguiente es tuyo! 💪',
         tarjetas: [tarjetaDe(sesion.cliente)],
         opciones: [OP.NUEVO, OP.BUSCAR, OP.RESUMEN],
+      };
+    }
+    if (tipo === 'editar') {
+      const id = campoEditadoId || Object.keys(datos)[0];
+      const valor = datos[id];
+      const etiqueta = (campoEditable(id)?.label || id).toLowerCase();
+      if (EDITABLES_INTERESADO.includes(id)) await db.actualizarInteresado(c.id, { [id]: valor });
+      if (c.venta && (EDITABLES_VENTA.includes(id) || EDITABLES_INTERESADO.includes(id))) await db.actualizarVenta(c.venta.id, { [id]: valor });
+      sesion.cliente = await db.obtenerCliente(c.id);
+      return {
+        reply: `✅ Listo, actualicé **${etiqueta}**: ${valor}`,
+        tarjetas: [tarjetaDe(sesion.cliente)],
+        opciones: [OP.EDITAR, ...accionesPara(sesion.cliente).filter((o) => o !== OP.EDITAR)].slice(0, 6),
       };
     }
     if (tipo === 'ot_activa') {
@@ -604,6 +651,7 @@ function arrancarAccion(sesion, accion) {
   }
   if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura');
   if (accion === 'escalar') return iniciarCaptura(sesion, 'escalamiento');
+  if (accion === 'editar') return pedirQueEditar(sesion);
   if (accion === 'ot_activa') {
     if (c.resultado === 'venta') return { reply: 'Este cliente ya tiene una venta registrada ✅.', opciones: [OP.NUEVO, OP.BUSCAR] };
     return iniciarCaptura(sesion, 'ot_activa');
@@ -904,6 +952,20 @@ async function manejar(sesion, asesor, texto) {
     return responderCaptura(sesion, asesor, t);
   }
 
+  // --- Eligiendo qué dato editar ---
+  if (sesion.modo === 'editar_elegir') {
+    const campo = editablesPara(sesion.cliente).find((f) => norm(f.label) === n || (norm(f.label).startsWith(n) && n.length >= 3));
+    if (campo) {
+      sesion.modo = 'captura';
+      sesion.captura = { tipo: 'editar', campoId: campo.id, campos: [campo], paso: 0, datos: {} };
+      const actual = valorActual(sesion.cliente, campo.id);
+      const p = preguntar(campo, sesion.captura);
+      return { ...p, progreso: undefined, reply: (actual ? `Ahora dice: **${actual}**\n\n` : '') + p.reply };
+    }
+    if (!intencion) return { ...pedirQueEditar(sesion), reply: 'Elige uno de los datos 👇' };
+    sesion.modo = 'libre';
+  }
+
   // --- Posible duplicado ---
   if (sesion.modo === 'duplicado') {
     if (/^si/.test(n)) {
@@ -967,11 +1029,11 @@ async function manejar(sesion, asesor, texto) {
   if (intencion === 'escalamientos') return misEscalamientos(sesion, asesor);
   if (intencion === 'misventas') return misVentas(sesion, asesor);
   if (intencion === 'misot') return misOtActivas(sesion, asesor);
-  if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar' || intencion === 'ot_activa') {
+  if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar' || intencion === 'ot_activa' || intencion === 'editar') {
     if (!sesion.cliente) {
       sesion.accionPendiente = intencion;
       sesion.modo = 'buscar';
-      const que = { venta: 'registrar la venta', no_venta: 'registrar que no se interesó', cobertura: 'actualizar la cobertura', rellamar: 'programar la rellamada', escalar: 'hacer el escalamiento', ot_activa: 'registrar la OT activa' }[intencion];
+      const que = { venta: 'registrar la venta', no_venta: 'registrar que no se interesó', cobertura: 'actualizar la cobertura', rellamar: 'programar la rellamada', escalar: 'hacer el escalamiento', ot_activa: 'registrar la OT activa', editar: 'editar los datos' }[intencion];
       return { reply: `Listo, para ${que} primero dime de qué cliente: nombre, celular o cédula.`, opciones: [OP.CANCELAR] };
     }
     return arrancarAccion(sesion, intencion);
@@ -1155,14 +1217,16 @@ function serializar(sesion) {
   const { captura, ...resto } = sesion;
   return {
     ...resto,
-    captura: captura ? { tipo: captura.tipo, paso: captura.paso, datos: captura.datos } : null,
+    captura: captura ? { tipo: captura.tipo, paso: captura.paso, datos: captura.datos, campoId: captura.campoId } : null,
   };
 }
 function hidratar(estado) {
   if (!estado || typeof estado !== 'object') return null;
   const sesion = { ...nuevaSesion(), ...estado };
   if (sesion.captura) {
-    const campos = CAMPOS()[sesion.captura.tipo];
+    const campos = sesion.captura.tipo === 'editar'
+      ? [campoEditable(sesion.captura.campoId)].filter(Boolean)
+      : CAMPOS()[sesion.captura.tipo];
     // Si el formulario cambió o quedó vacío (ej. "no_venta" ya no pide datos), se descarta.
     if (!Array.isArray(campos) || !campos.length) sesion.captura = null;
     else sesion.captura = { ...sesion.captura, campos, paso: Math.min(sesion.captura.paso || 0, campos.length - 1) };
