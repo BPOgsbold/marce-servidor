@@ -10,17 +10,9 @@
     {
       "id": "ciudad",
       "label": "Ciudad",
-      "prompt": "¿En qué ciudad o municipio queda esa dirección?",
-      "regex": "^.{3,}$",
-      "opcionesSugeridas": [
-        "Bogotá",
-        "Medellín",
-        "Cali",
-        "Barranquilla",
-        "Cartagena",
-        "Bucaramanga"
-      ],
-      "errorMessage": "Escribe el nombre de la ciudad o municipio."
+      "prompt": "¿En qué ciudad o municipio queda esa dirección? (escríbela, yo la busco 🔎)",
+      "errorMessage": "Escribe el nombre de la ciudad o municipio.",
+      "tipo": "municipio"
     },
     {
       "id": "nombre_cliente",
@@ -60,8 +52,8 @@
       "id": "ciudad",
       "label": "Ciudad",
       "prompt": "¿En qué ciudad se hace la instalación?",
-      "regex": "^.{2,}$",
-      "errorMessage": "Escribe el nombre de la ciudad."
+      "errorMessage": "Escribe el nombre de la ciudad o municipio.",
+      "tipo": "municipio"
     },
     {
       "id": "barrio",

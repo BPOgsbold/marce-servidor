@@ -168,7 +168,93 @@ function iniciarCaptura(sesion, tipo, datosPrevios = {}) {
   return preguntar(campos[cap.paso], cap);
 }
 
+// ---------------------------------------------------------------------------
+// Ciudades / municipios de Colombia (1.119, fuente DANE). El asesor escribe y
+// Marce la reconoce aunque venga sin tilde o con errores de digitación.
+// ---------------------------------------------------------------------------
+let MUNICIPIOS = null;
+function municipios() {
+  if (!MUNICIPIOS) {
+    const lista = JSON.parse(leer('municipios.json'));
+    const repetidos = new Set(lista.map((m) => m[0]).filter((n, i, a) => a.indexOf(n) !== i));
+    MUNICIPIOS = lista.map(([nombre, depto]) => ({
+      nombre,
+      depto,
+      etiqueta: repetidos.has(nombre) ? `${nombre} (${depto})` : nombre,
+      llave: llaveCiudad(nombre),
+    }));
+  }
+  return MUNICIPIOS;
+}
+function llaveCiudad(s) {
+  return norm(s)
+    .replace(/\b(d\.?\s?c\.?|distrito capital|distrito)\b/g, ' ')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+const ALIAS_CIUDAD = { bogota: 'Bogotá D.C.', bta: 'Bogotá D.C.', 'cartagena de indias': 'Cartagena', 'san jose de cucuta': 'Cúcuta', mede: 'Medellín', 'santafe de bogota': 'Bogotá D.C.',
+  villavo: 'Villavicencio', bquilla: 'Barranquilla', 'b quilla': 'Barranquilla', bmanga: 'Bucaramanga', 'b manga': 'Bucaramanga',
+  'santa fe de bogota': 'Bogotá D.C.', 'bogota dc': 'Bogotá D.C.' };
+function distancia(a, b) {
+  if (Math.abs(a.length - b.length) > 3) return 99;
+  const f = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = f[0];
+    f[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = f[j];
+      f[j] = Math.min(f[j] + 1, f[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return f[b.length];
+}
+const DEJAR = '✍️ Dejar: ';
+function validarMunicipio(crudo) {
+  const texto = String(crudo || '').trim();
+  if (texto.startsWith(DEJAR)) {
+    const v = texto.slice(DEJAR.length).replace(/^"|"$/g, '').trim();
+    return v.length >= 3 ? { ok: true, valor: v } : { ok: false };
+  }
+  const lista = municipios();
+  // Botón elegido: "Granada (Meta)" o nombre exacto
+  const porEtiqueta = lista.find((m) => norm(m.etiqueta) === norm(texto));
+  if (porEtiqueta) return { ok: true, valor: porEtiqueta.etiqueta, extra: { departamento: porEtiqueta.depto } };
+  const k = llaveCiudad(texto);
+  if (k.length < 3) return { ok: false };
+  const alias = ALIAS_CIUDAD[k];
+  const exactos = alias ? lista.filter((m) => m.nombre === alias) : lista.filter((m) => m.llave === k);
+  if (exactos.length === 1) return { ok: true, valor: exactos[0].etiqueta, extra: { departamento: exactos[0].depto } };
+  if (exactos.length > 1) {
+    return { ok: false, mensaje: `Hay varios municipios llamados "${exactos[0].nombre}". ¿Cuál es?`, sugerencias: exactos.map((m) => m.etiqueta) };
+  }
+  const candidatos = lista
+    .map((m) => {
+      let d = distancia(k, m.llave);
+      if (m.llave.startsWith(k)) d = Math.min(d, 0.5);
+      else if (k.length >= 4 && m.llave.includes(k)) d = Math.min(d, 1);
+      return { m, d };
+    })
+    .filter((x) => x.d <= (k.length >= 7 ? 2 : 1))
+    .sort((a, b) => a.d - b.d || a.m.nombre.length - b.m.nombre.length)
+    .slice(0, 5);
+  if (candidatos.length === 1 && candidatos[0].d <= 1 && !candidatos[0].m.llave.startsWith(k)) {
+    // Un solo parecido muy cercano (ej. "medelin" → Medellín): lo tomamos de una.
+    const m = candidatos[0].m;
+    return { ok: true, valor: m.etiqueta, extra: { departamento: m.depto } };
+  }
+  return {
+    ok: false,
+    mensaje: candidatos.length
+      ? `No encontré "${texto}" exacto. ¿Es alguna de estas?`
+      : `No encontré "${texto}" entre los municipios de Colombia. Revisa cómo está escrito, o déjalo así si estás seguro.`,
+    sugerencias: [...candidatos.map((x) => x.m.etiqueta), `${DEJAR}${texto}`],
+  };
+}
+
 function validar(campo, crudo) {
+  if (campo.tipo === 'municipio') return validarMunicipio(crudo);
   let v = String(crudo || '').trim();
   if (campo.normalizar === 'solo_numeros') v = v.replace(/\D/g, '');
   if (campo.opciones) {
@@ -183,12 +269,16 @@ async function responderCaptura(sesion, asesor, texto) {
   const cap = sesion.captura;
   const campo = cap.campos[cap.paso];
   const r = validar(campo, texto);
+  if (!r.ok && r.sugerencias) {
+    return { reply: r.mensaje, opciones: r.sugerencias, progreso: preguntar(campo, cap).progreso };
+  }
   if (!r.ok) {
     const msg = campo.opciones ? `Elige una de las opciones 👇` : `⚠️ ${campo.errorMessage || 'Revisa ese dato.'}`;
     const p = preguntar(campo, cap);
     return { ...p, reply: `${msg}\n\n${p.reply}` };
   }
   cap.datos[campo.id] = r.valor;
+  if (r.extra) Object.assign(cap.datos, r.extra);
   cap.paso += 1;
 
   // Al tener el teléfono de un interesado nuevo, revisamos si ya existe.
