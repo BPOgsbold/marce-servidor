@@ -1,0 +1,122 @@
+{
+  "interesado": [
+    {
+      "id": "direccion",
+      "label": "Dirección",
+      "prompt": "¿Cuál es la dirección del cliente?",
+      "regex": "^.{5,}$",
+      "errorMessage": "Escribe la dirección completa (mínimo 5 caracteres)."
+    },
+    {
+      "id": "nombre_cliente",
+      "label": "Nombre",
+      "prompt": "¿Cómo se llama el cliente?",
+      "regex": "^.{3,}$",
+      "errorMessage": "Escribe el nombre del cliente (mínimo 3 caracteres)."
+    },
+    {
+      "id": "telefono",
+      "label": "Teléfono",
+      "prompt": "¿Cuál es su número de celular?",
+      "regex": "^3[0-9]{9}$",
+      "normalizar": "solo_numeros",
+      "errorMessage": "El celular debe tener 10 dígitos y empezar en 3 (ej. 3001234567)."
+    },
+    {
+      "id": "cobertura",
+      "label": "Cobertura",
+      "prompt": "¿Esa dirección tiene cobertura?",
+      "opciones": ["Sí", "No"]
+    }
+  ],
+  "venta": [
+    {
+      "id": "cedula",
+      "label": "Cédula",
+      "prompt": "¡Qué buena noticia! 🎉 Dejemos la venta bien registrada. ¿Cuál es la cédula del cliente?",
+      "regex": "^[0-9]{6,10}$",
+      "normalizar": "solo_numeros",
+      "errorMessage": "La cédula debe tener entre 6 y 10 dígitos, solo números."
+    },
+    {
+      "id": "ciudad",
+      "label": "Ciudad",
+      "prompt": "¿En qué ciudad se hace la instalación?",
+      "regex": "^.{2,}$",
+      "errorMessage": "Escribe el nombre de la ciudad."
+    },
+    {
+      "id": "barrio",
+      "label": "Barrio",
+      "prompt": "¿En qué barrio queda la dirección?",
+      "regex": "^.{2,}$",
+      "errorMessage": "Escribe el nombre del barrio."
+    },
+    {
+      "id": "plan",
+      "label": "Plan vendido",
+      "prompt": "¿Qué plan o paquete se vendió? (ej. Hogar 300 Megas + TV)",
+      "regex": "^.{2,}$",
+      "errorMessage": "Describe el plan o paquete vendido."
+    },
+    {
+      "id": "numero_ot",
+      "label": "Número de OT",
+      "prompt": "¿Cuál quedó el número de OT (orden de trabajo)?",
+      "regex": "^.{2,}$",
+      "errorMessage": "Escribe el número de OT tal como lo entregó el sistema."
+    },
+    {
+      "id": "numero_cuenta",
+      "label": "Número de cuenta",
+      "prompt": "¿Cuál es el número de cuenta?",
+      "regex": "^.{2,}$",
+      "errorMessage": "Escribe el número de cuenta."
+    },
+    {
+      "id": "fecha_agenda",
+      "label": "Fecha de instalación",
+      "prompt": "¿Para qué fecha quedó agendada la instalación? (DD/MM/AAAA)",
+      "regex": "^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$",
+      "errorMessage": "Usa el formato DD/MM/AAAA, por ejemplo 18/10/2026."
+    },
+    {
+      "id": "hora_agenda",
+      "label": "Franja",
+      "prompt": "¿En qué franja quedó la instalación?",
+      "opciones": ["AM (8:00 - 12:00)", "PM (12:00 - 5:00)", "Todo el día"]
+    },
+    {
+      "id": "observaciones",
+      "label": "Observaciones",
+      "prompt": "Ya casi. ¿Alguna observación? (si no hay, toca \"Ninguna\")",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": ["Ninguna"],
+      "errorMessage": "Escribe una observación o \"Ninguna\"."
+    }
+  ],
+  "no_venta": [
+    {
+      "id": "motivo_no_interes",
+      "label": "Motivo",
+      "prompt": "Entendido, igual sirve para aprender. ¿Cuál fue el motivo principal?",
+      "opciones": ["Precio", "Ya tiene otro operador", "Mal momento", "No decide él/ella", "Sin cobertura", "Otro"]
+    },
+    {
+      "id": "observaciones",
+      "label": "Observaciones",
+      "prompt": "¿Alguna observación? (si no hay, toca \"Ninguna\")",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": ["Ninguna"],
+      "errorMessage": "Escribe una observación o \"Ninguna\"."
+    }
+  ],
+  "cobertura": [
+    {
+      "id": "cobertura",
+      "label": "Cobertura",
+      "prompt": "¿Cómo quedó la cobertura de esa dirección?",
+      "opciones": ["Sí", "No"]
+    }
+  ]
+}
