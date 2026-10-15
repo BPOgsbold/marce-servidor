@@ -82,6 +82,12 @@ async function guardarVenta(asesor, cliente, datos) {
     datos: completo,
   };
   for (const col of COLS_VENTA) if (completo[col] != null) row[col] = completo[col];
+  // Venta de un día anterior (solo si el back lo activó en el panel): queda con esa fecha.
+  const hoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(completo.fecha_venta || '') && completo.fecha_venta < hoy) {
+    row.created_at = new Date(`${completo.fecha_venta}T12:00:00-05:00`).toISOString();
+    row.datos = { ...completo, registrada_el: new Date().toISOString() };
+  }
   const { data, error } = await supabase.from('ventas').insert(row).select().single();
   if (error) throw error;
   return data;
@@ -330,6 +336,54 @@ async function panelDatos(desde, hasta) {
   return { interesados: conVenta, ventas, rellamadas: rell || [], escalamientos: esc || [], ventasPendientes: vPend || [], otActivas: ots || [] };
 }
 
+// ---------------------------------------------------------------------------
+// Interruptores del panel (tabla marce_config)
+// ---------------------------------------------------------------------------
+async function leerConfig() {
+  const { data, error } = await getClient().from('marce_config').select('*');
+  if (error) throw error;
+  const cfg = {};
+  for (const f of data || []) cfg[f.clave] = { valor: f.valor, por: f.por, actualizado: f.actualizado };
+  return cfg;
+}
+async function guardarConfig(clave, valor, por) {
+  const { data, error } = await getClient()
+    .from('marce_config')
+    .upsert({ clave, valor, por: por || null, actualizado: new Date().toISOString() })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Eliminar registros mal subidos (solo desde el panel)
+// ---------------------------------------------------------------------------
+async function eliminarVenta(id) {
+  const supabase = getClient();
+  const { data: v, error: e1 } = await supabase.from('ventas').select('id, interesado_id').eq('id', id).maybeSingle();
+  if (e1) throw e1;
+  if (!v) return { ok: true };
+  const { error: e2 } = await supabase.from('ventas').delete().eq('id', id);
+  if (e2) throw e2;
+  if (v.interesado_id) {
+    const { count } = await supabase.from('ventas').select('id', { count: 'exact', head: true }).eq('interesado_id', v.interesado_id);
+    if (!count) {
+      const { data: i } = await supabase.from('interesados').select('resultado').eq('id', v.interesado_id).maybeSingle();
+      if (i?.resultado === 'venta') await actualizarInteresado(v.interesado_id, { resultado: 'en_gestion' });
+    }
+  }
+  return { ok: true };
+}
+async function eliminarInteresado(id) {
+  const supabase = getClient();
+  const { error: e1 } = await supabase.from('ventas').delete().eq('interesado_id', id);
+  if (e1) throw e1;
+  const { error: e2 } = await supabase.from('interesados').delete().eq('id', id);
+  if (e2) throw e2;
+  return { ok: true };
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -356,4 +410,8 @@ module.exports = {
   ventasDeAsesor,
   actualizarVenta,
   otActivasDeAsesor,
+  leerConfig,
+  guardarConfig,
+  eliminarVenta,
+  eliminarInteresado,
 };

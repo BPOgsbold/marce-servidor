@@ -17,6 +17,22 @@ const leer = (archivo) => fs.readFileSync(path.join(__dirname, archivo), 'utf8')
 const CAMPOS = () => JSON.parse(leer('campos.json'));
 
 // ---------------------------------------------------------------------------
+// Interruptores que el back prende/apaga desde el panel (tabla marce_config).
+// Se guardan 30 s en memoria para no consultar Supabase en cada mensaje.
+// ---------------------------------------------------------------------------
+let CONFIG = { datos: {}, ts: 0 };
+async function refrescarConfig(forzar) {
+  if (!forzar && Date.now() - CONFIG.ts < 30000) return CONFIG.datos;
+  try {
+    CONFIG = { datos: await db.leerConfig(), ts: Date.now() };
+  } catch (e) {
+    CONFIG.ts = Date.now(); // si la tabla no existe todavía, todo queda apagado
+  }
+  return CONFIG.datos;
+}
+const activo = (clave) => Boolean(CONFIG.datos[clave]?.valor);
+
+// ---------------------------------------------------------------------------
 // Sesiones (una por ventana de chat). Viven en memoria del servidor.
 // ---------------------------------------------------------------------------
 const sesiones = new Map();
@@ -166,6 +182,32 @@ function validarFechaFutura(crudo) {
   return { ok: true, valor: iso };
 }
 
+// Fecha de una venta de días anteriores: desde hace 31 días hasta hoy.
+const DIAS_ATRAS = 31;
+function validarFechaPasada(crudo) {
+  const t = norm(crudo).replace(/^📅\s*/, '');
+  const hoy = hoyCO();
+  let iso = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) iso = t;
+  else if (/^hoy\b/.test(t)) iso = hoy;
+  else if (/^antier|^anteayer/.test(t)) iso = sumarDias(hoy, -2);
+  else if (/^ayer/.test(t)) iso = sumarDias(hoy, -1);
+  else {
+    const m = t.match(/^(\d{1,2})\s*[\/-]\s*(\d{1,2})(?:\s*[\/-]\s*(\d{2,4}))?$/);
+    if (m) {
+      let anio = m[3] ? parseInt(m[3], 10) : parseInt(hoy.slice(0, 4), 10);
+      if (anio < 100) anio += 2000;
+      const cand = `${anio}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+      const d = new Date(cand + 'T12:00:00Z');
+      if (!isNaN(d) && d.toISOString().slice(0, 10) === cand) iso = !m[3] && cand > hoy ? `${anio - 1}${cand.slice(4)}` : cand;
+    }
+  }
+  if (!iso) return { ok: false };
+  if (iso > hoy) return { ok: false, mensaje: 'La venta no puede ser de una fecha futura.' };
+  if (iso < sumarDias(hoy, -DIAS_ATRAS)) return { ok: false, mensaje: `Solo se pueden registrar ventas de los últimos ${DIAS_ATRAS} días.` };
+  return { ok: true, valor: iso };
+}
+
 // Estado de instalación de una venta (lo marca el back office en el panel).
 function textoInstalacion(v) {
   const fecha = v.instalacion_fecha
@@ -197,6 +239,9 @@ function tarjetaDe(c) {
   ];
   if (c.venta) {
     const v = c.venta;
+    if (v.datos?.registrada_el && v.created_at) {
+      detalles.push(['📅 Fecha venta', new Date(v.created_at).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short' }) + ' (fecha anterior)']);
+    }
     detalles.push(['Cédula', v.cedula], ['Plan', v.plan], ['OT', v.numero_ot], ['Cuenta', v.numero_cuenta]);
     detalles.push(['Agenda', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
     detalles.push(['Instalación', textoInstalacion(v)]);
@@ -280,7 +325,12 @@ function preguntar(campo, cap) {
   };
   const ops = campo.opciones || campo.opcionesSugeridas;
   if (ops) resp.opciones = [...ops];
-  if (campo.entrada) resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
+  if (campo.entrada) {
+    resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
+    if (campo.tipo === 'fecha_pasada') Object.assign(resp.entrada, { min: sumarDias(hoyCO(), -DIAS_ATRAS), max: hoyCO() });
+    // Venta de un día anterior: la instalación pudo quedar agendada desde ese día.
+    if (campo.id === 'fecha_agenda' && cap.datos.fecha_venta && cap.datos.fecha_venta < hoyCO()) resp.entrada.min = cap.datos.fecha_venta;
+  }
   return resp;
 }
 const TITULOS = { interesado: 'Nuevo interesado', venta: 'Registro de venta', no_venta: 'No se interesó', cobertura: 'Cobertura', rellamar: 'Volver a llamar', escalamiento: 'Escalamiento', ot_activa: 'OT activa', editar: 'Editar dato' };
@@ -293,6 +343,8 @@ const conCliente = (sesion) => (sesion.cliente ? ` de ${sesion.cliente.nombre_cl
 function iniciarCaptura(sesion, tipo, datosPrevios = {}) {
   const campos = CAMPOS()[tipo];
   const cap = { tipo, campos, paso: 0, datos: { ...datosPrevios } };
+  // Campos que solo aparecen si el back los activó en el panel (ej. fecha de venta anterior).
+  for (const c of campos) if (c.soloSi && !activo(c.soloSi) && !(c.id in cap.datos)) cap.datos[c.id] = null;
   while (cap.paso < campos.length && campos[cap.paso].id in cap.datos) cap.paso += 1;
   sesion.modo = 'captura';
   sesion.captura = cap;
@@ -387,6 +439,7 @@ function validarMunicipio(crudo) {
 function validar(campo, crudo) {
   if (campo.tipo === 'municipio') return validarMunicipio(crudo);
   if (campo.tipo === 'fecha_futura') return validarFechaFutura(crudo);
+  if (campo.tipo === 'fecha_pasada') return validarFechaPasada(crudo);
   let v = String(crudo || '').trim();
   if (campo.normalizar === 'solo_numeros') v = v.replace(/\D/g, '');
   if (campo.opciones) {
@@ -874,6 +927,7 @@ async function ayuda(sesion, texto) {
 let asesorActual = '';
 async function manejar(sesion, asesor, texto) {
   asesorActual = asesor;
+  await refrescarConfig();
   const t = String(texto || '').trim();
   const n = norm(t);
   const nombre = asesor ? asesor.split(' ')[0] : '';
@@ -1193,6 +1247,41 @@ app.post('/api/panel/escalamiento', exigirClave, async (req, res) => {
     res.json({ ok: true, interesado });
   } catch (err) {
     console.error('Error panel/escalamiento:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Interruptores del panel (ej. permitir ventas con fecha anterior).
+const CLAVES_CONFIG = ['ventas_fecha_anterior'];
+app.get('/api/panel/config', exigirClave, async (req, res) => {
+  try {
+    res.json(await db.leerConfig());
+  } catch (err) {
+    res.status(500).json({ error: /marce_config/.test(err.message) ? 'Falta crear la tabla marce_config en Supabase (supabase_config.sql).' : err.message });
+  }
+});
+app.post('/api/panel/config', exigirClave, async (req, res) => {
+  try {
+    const { clave, valor, auditor } = req.body || {};
+    if (!CLAVES_CONFIG.includes(clave)) return res.status(400).json({ error: 'Interruptor no válido.' });
+    await db.guardarConfig(clave, Boolean(valor), auditor);
+    await refrescarConfig(true);
+    res.json({ ok: true, config: CONFIG.datos });
+  } catch (err) {
+    console.error('Error panel/config:', err);
+    res.status(500).json({ error: /marce_config/.test(err.message) ? 'Falta crear la tabla marce_config en Supabase (supabase_config.sql).' : err.message });
+  }
+});
+
+// Eliminar registros mal subidos. Solo desde el panel (con la clave).
+app.post('/api/panel/eliminar', exigirClave, async (req, res) => {
+  try {
+    const { tipo, id, auditor } = req.body || {};
+    if (!id || !['venta', 'interesado'].includes(tipo)) return res.status(400).json({ error: 'Falta id o el tipo no es válido.' });
+    console.log(`Panel: ${auditor || 'alguien'} eliminó ${tipo} ${id}`);
+    res.json(tipo === 'venta' ? await db.eliminarVenta(id) : await db.eliminarInteresado(id));
+  } catch (err) {
+    console.error('Error panel/eliminar:', err);
     res.status(500).json({ error: err.message });
   }
 });

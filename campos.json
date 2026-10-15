@@ -41,6 +41,20 @@
   ],
   "venta": [
     {
+      "id": "fecha_venta",
+      "label": "Fecha de la venta",
+      "prompt": "📅 ¿De qué día es esta venta? Si es de hoy toca \"Hoy\"; si es de un día anterior, elígela en el calendario.",
+      "tipo": "fecha_pasada",
+      "soloSi": "ventas_fecha_anterior",
+      "opcionesSugeridas": [
+        "Hoy",
+        "Ayer"
+      ],
+      "errorMessage": "No entendí la fecha. Escribe hoy, ayer o una fecha como 10/10.",
+      "entrada": "fecha",
+      "formato": "iso"
+    },
+    {
       "id": "cedula",
       "label": "Cédula",
       "prompt": "¡Qué buena noticia! 🎉 Dejemos la venta bien registrada. ¿Cuál es la cédula del cliente?",
