@@ -74,6 +74,7 @@ const OP = {
   OT_ACTIVA: 'OT activa',
   MIS_OT: 'Mis OT activas',
   EDITAR: '✏️ Editar datos',
+  ALERTAS: '🔔 Alertas de cobertura',
   ESCALAR: 'Escalamiento',
 };
 const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
@@ -84,6 +85,7 @@ const INTENCIONES = [
   ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
   ['resumen_mes', /resumen\s+del\s+mes|como\s+voy\s+(en\s+)?(el|este)\s+mes|numeros\s+del\s+mes|en\s+el\s+mes/],
   ['resumen_equipo', /resumen\s+(del|de\s+todo\s+el)\s+equipo|como\s+va\s+el\s+equipo|numeros\s+del\s+equipo/],
+  ['alertas', /alerta|confirmo\s+cobertura|si\s+tenia\s+cobertura/],
   ['resumen', /resumen|consolid|como\s+voy|mis\s+numeros|cuant[oa]s\s+(llevo|tengo|van|ventas|interesados)/],
   ['venta', /registrar\s+(la\s+|una\s+)?venta|(es|fue|hubo|cerre|cerramos|se\s+hizo)\s+(una\s+)?venta|^venta$|ya\s+compro|acepto\s+la\s+oferta/],
   ['no_venta', /no\s+se\s+intereso|no\s+le\s+intereso|no\s+(esta|estuvo)\s+interesad|^no\s+venta$|no\s+quiso|rechazo/],
@@ -225,6 +227,20 @@ function textoAuditoria(c) {
   return '';
 }
 
+// 🔔 Alerta: el asesor marcó "No" y el back confirmó que SÍ tiene cobertura.
+// Se apaga sola cuando el asesor vuelve a gestionar al cliente (actualiza cobertura,
+// registra venta, no se interesó, volver a llamar…).
+function alertaCobertura(c) {
+  if (!c || c.auditoria_cobertura !== 'confirmada' || norm(c.cobertura_validada) !== 'no') return false;
+  if (c.resultado === 'venta') return false;
+  const aud = new Date(c.auditoria_fecha || 0).getTime();
+  const upd = new Date(c.updated_at || 0).getTime();
+  return !(upd - aud > 60000);
+}
+async function alertasDe(asesor) {
+  return (await db.alertasCobertura(asesor)).filter(alertaCobertura);
+}
+
 function tarjetaDe(c) {
   const fecha = c.created_at
     ? new Date(c.created_at).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
@@ -237,6 +253,7 @@ function tarjetaDe(c) {
     ['Cobertura', (cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar') + textoAuditoria(c)],
     ['Registrado', fecha],
   ];
+  if (alertaCobertura(c)) detalles.unshift(['🔔 Alerta', 'El back confirmó que SÍ tiene cobertura — vuelve a llamarlo']);
   if (c.venta) {
     const v = c.venta;
     if (v.datos?.registrada_el && v.created_at) {
@@ -835,6 +852,26 @@ async function misOtActivas(sesion, asesor) {
   };
 }
 
+async function misAlertas(sesion, asesor) {
+  let lista;
+  try {
+    lista = await alertasDe(asesor);
+  } catch (e) {
+    return { reply: `No pude traer las alertas (${e.message}).`, error: true };
+  }
+  if (!lista.length) {
+    sesion.modo = 'libre';
+    return { reply: 'No tienes alertas de cobertura. 🙌', opciones: MENU };
+  }
+  sesion.modo = 'seleccion';
+  sesion.resultados = lista;
+  return {
+    reply: `🔔 El back confirmó que **${lista.length}** cliente(s) que marcaste **sin cobertura** SÍ tienen. ¡Es una venta por recuperar! Vuelve a llamarlos. Toca uno para abrir la ficha 👇`,
+    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, horaCorta: '🔔 Sí tiene cobertura', elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    opciones: [OP.CANCELAR],
+  };
+}
+
 async function misEscalamientos(sesion, asesor) {
   let lista;
   try {
@@ -941,6 +978,8 @@ async function manejar(sesion, asesor, texto) {
       const nuevas = (await db.ventasDeAsesor(asesor)).filter((v) => v.estado_instalacion === 'instalada' && new Date(v.instalacion_fecha).getTime() > hace2).length;
       const otLib = (await db.otActivasDeAsesor(asesor)).filter((c) => c.ot_activa_estado === 'liberada' && Date.now() - new Date(c.ot_activa_liberada_fecha).getTime() < 2 * 86400000).length;
       if (otLib) aviso += `\n\n🧾 **${otLib}** cliente(s) con OT activa ya quedaron **liberados**. Mira la pestaña "OT" y retoma la venta.`;
+      const alertas = (await alertasDe(asesor)).length;
+      if (alertas) aviso += `\n\n🔔 **${alertas}** cliente(s) que marcaste sin cobertura **SÍ tienen** según el back. Toca "${OP.ALERTAS}".`;
       if (nuevas) aviso += `\n\n🎉 ¡Buenas noticias! **${nuevas}** de tus ventas quedó(aron) **instalada(s)**. Mira la pestaña "Ventas".`;
     } catch (_) {}
     return {
@@ -949,7 +988,7 @@ async function manejar(sesion, asesor, texto) {
         'Cuando tengas un interesado dime "tengo un cliente interesado" y lo registramos. ' +
         'También puedo buscar un cliente (por nombre, celular o cédula), registrar la venta, ' +
         'programar una rellamada, ayudarte con objeciones o darte el resumen del día.' + aviso,
-      opciones: MENU,
+      opciones: /🔔/.test(aviso) ? [OP.ALERTAS, ...MENU] : MENU,
     };
   }
   if (t === '__nuevo__') {
@@ -990,7 +1029,7 @@ async function manejar(sesion, asesor, texto) {
     const campo = cap.campos[cap.paso];
     const esOpcion = (campo.opciones || campo.opcionesSugeridas || []).some((o) => norm(o) === n);
     // Saltos explícitos de flujo (solo frases claras, para no confundir datos con comandos)
-    if (!esOpcion && ['resumen', 'resumen_equipo', 'resumen_mes', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos', 'misventas', 'misot'].includes(intencion) && n.split(' ').length <= 6) {
+    if (!esOpcion && ['resumen', 'resumen_equipo', 'resumen_mes', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos', 'misventas', 'misot', 'alertas'].includes(intencion) && n.split(' ').length <= 6) {
       const titulo = TITULOS[cap.tipo];
       return {
         reply: `Estamos en medio de "${titulo}". ¿Lo dejamos y seguimos con lo otro?`,
@@ -1083,6 +1122,7 @@ async function manejar(sesion, asesor, texto) {
   if (intencion === 'escalamientos') return misEscalamientos(sesion, asesor);
   if (intencion === 'misventas') return misVentas(sesion, asesor);
   if (intencion === 'misot') return misOtActivas(sesion, asesor);
+  if (intencion === 'alertas') return misAlertas(sesion, asesor);
   if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar' || intencion === 'ot_activa' || intencion === 'editar') {
     if (!sesion.cliente) {
       sesion.accionPendiente = intencion;
@@ -1111,7 +1151,7 @@ app.get('/api/mis-pendientes', async (req, res) => {
   try {
     const asesor = String(req.query.asesor || '').trim();
     if (!asesor) return res.status(400).json({ error: 'Falta el asesor' });
-    const [rell, escs, vts, ots] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor), db.ventasDeAsesor(asesor), db.otActivasDeAsesor(asesor)]);
+    const [rell, escs, vts, ots, alertas] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor), db.ventasDeAsesor(asesor), db.otActivasDeAsesor(asesor), alertasDe(asesor).catch(() => [])]);
     const hoy = hoyCO();
     const corto = (c) => ({
       id: c.id,
@@ -1121,6 +1161,7 @@ app.get('/api/mis-pendientes', async (req, res) => {
     });
     res.json({
       hoy,
+      alertasCobertura: alertas.map((c) => ({ ...corto(c), fecha: c.auditoria_fecha, por: c.auditoria_por, nota: c.auditoria_nota })),
       rellamadas: rell.map((c) => ({
         ...corto(c),
         fecha: c.rellamar_fecha,

@@ -384,6 +384,21 @@ async function eliminarInteresado(id) {
   return { ok: true };
 }
 
+/** Clientes que el asesor marcó SIN cobertura y el back confirmó que SÍ tienen (alertas). */
+async function alertasCobertura(asesor) {
+  let q = getClient()
+    .from('interesados')
+    .select('*')
+    .eq('auditoria_cobertura', 'confirmada')
+    .ilike('cobertura_validada', 'no')
+    .order('auditoria_fecha', { ascending: false })
+    .limit(60);
+  if (asesor) q = q.eq('asesor', asesor);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -414,4 +429,5 @@ module.exports = {
   guardarConfig,
   eliminarVenta,
   eliminarInteresado,
+  alertasCobertura,
 };
