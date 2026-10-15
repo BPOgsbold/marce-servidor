@@ -95,6 +95,13 @@ const esCedula = (t) => /^\d{6,10}$/.test(String(t).replace(/[\s.]/g, ''));
 // ---------------------------------------------------------------------------
 const ESTADOS = { en_gestion: 'En gestión', venta: 'Venta', no_venta: 'No se interesó' };
 
+// Lo que el back office dijo sobre la cobertura (auditoría desde el panel).
+function textoAuditoria(c) {
+  if (c.auditoria_cobertura === 'confirmada') return ' · ✅ auditada';
+  if (c.auditoria_cobertura === 'sin_cobertura') return ' · ❌ auditoría: sin cobertura';
+  return '';
+}
+
 function tarjetaDe(c) {
   const fecha = c.created_at
     ? new Date(c.created_at).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
@@ -103,7 +110,7 @@ function tarjetaDe(c) {
   const detalles = [
     ['Teléfono', c.telefono],
     ['Dirección', [c.direccion, c.ciudad].filter(Boolean).join(' · ')],
-    ['Cobertura', cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar'],
+    ['Cobertura', (cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar') + textoAuditoria(c)],
     ['Registrado', [fecha, c.asesor].filter(Boolean).join(' · ')],
   ];
   if (c.venta) {
@@ -553,6 +560,52 @@ async function manejar(sesion, asesor, texto) {
 // Rutas
 // ---------------------------------------------------------------------------
 app.get('/api/health', (req, res) => res.json({ ok: true, ia: iaDisponible() }));
+
+// ---------------------------------------------------------------------------
+// Panel web (back office). Protegido con la clave PANEL_CLAVE de Render.
+// ---------------------------------------------------------------------------
+function exigirClave(req, res, next) {
+  const clave = process.env.PANEL_CLAVE;
+  if (!clave) return res.status(503).json({ error: 'Falta configurar PANEL_CLAVE en Render (Environment).' });
+  if (req.get('x-panel-clave') !== clave) return res.status(401).json({ error: 'Clave incorrecta.' });
+  next();
+}
+
+// Fecha "AAAA-MM-DD" (hora Colombia) → ISO
+const isoColombia = (fecha, finDelDia) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return null;
+  const d = new Date(`${fecha}T00:00:00-05:00`);
+  if (finDelDia) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString();
+};
+
+app.get('/api/panel/login', exigirClave, (req, res) => res.json({ ok: true }));
+
+app.get('/api/panel/datos', exigirClave, async (req, res) => {
+  try {
+    const hoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+    const desde = isoColombia(req.query.desde || hoy, false);
+    const hasta = isoColombia(req.query.hasta || hoy, true);
+    if (!desde || !hasta) return res.status(400).json({ error: 'Fechas inválidas (usa AAAA-MM-DD).' });
+    res.json(await db.panelDatos(desde, hasta));
+  } catch (err) {
+    console.error('Error panel/datos:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/panel/auditar', exigirClave, async (req, res) => {
+  try {
+    const { id, resultado, nota, auditor } = req.body || {};
+    if (!id || !['confirmada', 'sin_cobertura', 'pendiente'].includes(resultado)) {
+      return res.status(400).json({ error: 'Falta id o el resultado no es válido.' });
+    }
+    res.json({ ok: true, interesado: await db.auditarCobertura(id, { resultado, nota, auditor }) });
+  } catch (err) {
+    console.error('Error panel/auditar:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // El estado de la conversación viaja con cada mensaje (lo guarda la extensión).
 // Así, aunque Render reinicie o "duerma" el servidor, no se pierde el paso

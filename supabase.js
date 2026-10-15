@@ -192,7 +192,51 @@ async function resumenDeHoy(asesor) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Panel web (back office)
+// ---------------------------------------------------------------------------
+
+/** Interesados (con su venta) y ventas creados entre dos fechas ISO. */
+async function panelDatos(desde, hasta) {
+  const supabase = getClient();
+  const traer = async (tabla) => {
+    let filas = [];
+    for (let desdeFila = 0; desdeFila < 20000; desdeFila += 1000) {
+      const { data, error } = await supabase
+        .from(tabla)
+        .select('*')
+        .gte('created_at', desde)
+        .lt('created_at', hasta)
+        .order('created_at', { ascending: false })
+        .range(desdeFila, desdeFila + 999);
+      if (error) throw error;
+      filas = filas.concat(data || []);
+      if (!data || data.length < 1000) break;
+    }
+    return filas;
+  };
+  const [interesados, ventas] = await Promise.all([traer('interesados'), traer('ventas')]);
+  // Ventas de cualquier fecha para los interesados del rango (para mostrar su estado completo).
+  const conVenta = [];
+  for (let i = 0; i < interesados.length; i += 300) {
+    conVenta.push(...(await adjuntarVentas(interesados.slice(i, i + 300))));
+  }
+  return { interesados: conVenta, ventas };
+}
+
+/** Registra la auditoría de cobertura hecha por el back office. */
+async function auditarCobertura(id, { resultado, nota, auditor }) {
+  return actualizarInteresado(id, {
+    auditoria_cobertura: resultado, // 'confirmada' | 'sin_cobertura' | 'pendiente'
+    auditoria_nota: nota || null,
+    auditoria_por: auditor || null,
+    auditoria_fecha: resultado === 'pendiente' ? null : new Date().toISOString(),
+  });
+}
+
 module.exports = {
+  panelDatos,
+  auditarCobertura,
   crearInteresado,
   actualizarInteresado,
   guardarVenta,
