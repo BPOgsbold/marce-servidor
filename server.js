@@ -49,11 +49,14 @@ const OP = {
   NO_VENTA: 'No se interesó',
   COBERTURA: 'Actualizar cobertura',
   CANCELAR: 'Cancelar',
+  HOY: 'Mis clientes de hoy',
 };
-const MENU = [OP.NUEVO, OP.BUSCAR, OP.RESUMEN];
+const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RESUMEN];
 
 const INTENCIONES = [
   ['cancelar', /^(cancelar|cancela|salir|olvidalo|reiniciar|empezar de nuevo)$/],
+  ['menu', /^(nuevo|nueva|menu|opciones|ayuda|inicio|hola|que puedes hacer|que haces|\+ ?nuevo)[.!?]*$/],
+  ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
   ['resumen_equipo', /resumen\s+(del|de\s+todo\s+el)\s+equipo|como\s+va\s+el\s+equipo|numeros\s+del\s+equipo/],
   ['resumen', /resumen|consolid|como\s+voy|mis\s+numeros|cuant[oa]s\s+(llevo|tengo|van|ventas|interesados)/],
   ['venta', /registrar\s+(la\s+|una\s+)?venta|(es|fue|hubo|cerre|cerramos|se\s+hizo)\s+(una\s+)?venta|^venta$|ya\s+compro|acepto\s+la\s+oferta/],
@@ -111,8 +114,12 @@ function tarjetaDe(c) {
   if (c.resultado === 'no_venta' && c.motivo_no_interes) detalles.push(['Motivo', c.motivo_no_interes]);
   if (c.observaciones && norm(c.observaciones) !== 'ninguna') detalles.push(['Observaciones', c.observaciones]);
   const estado = c.resultado || 'en_gestion';
+  const horaCorta = c.created_at
+    ? new Date(c.created_at).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: 'numeric', minute: '2-digit' })
+    : '';
   return {
     id: c.id,
+    horaCorta,
     nombre: c.nombre_cliente || 'Sin nombre',
     estado,
     estadoTexto: ESTADOS[estado] || estado,
@@ -289,7 +296,7 @@ async function ejecutarBusqueda(sesion, termino) {
   sesion.resultados = resultados;
   return {
     reply: `Encontré ${resultados.length} clientes con "${termino}". ¿Cuál es?`,
-    tarjetas: resultados.map((c) => ({ ...tarjetaDe(c), compacta: true })),
+    tarjetas: resultados.map((c, i) => ({ ...tarjetaDe(c), compacta: true, elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
     opciones: resultados.map((c, i) => `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}`).concat(OP.CANCELAR),
   };
 }
@@ -323,6 +330,30 @@ function arrancarAccion(sesion, accion) {
   if (accion === 'no_venta') return iniciarCaptura(sesion, 'no_venta');
   if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura');
   return { reply: '¿Qué hacemos?', opciones: accionesPara(c) };
+}
+
+// ---------------------------------------------------------------------------
+// Mis clientes de hoy (para elegir sin tener el teléfono)
+// ---------------------------------------------------------------------------
+async function clientesDeHoy(sesion, asesor) {
+  let lista;
+  try {
+    lista = await db.clientesDeHoy(asesor);
+  } catch (e) {
+    console.error('Error listando clientes de hoy:', e);
+    return { reply: `No pude traer la lista (${e.message}).`, error: true };
+  }
+  if (!lista.length) {
+    sesion.modo = 'libre';
+    return { reply: 'Hoy todavía no has registrado clientes. ¡A darle! 💪', opciones: [OP.NUEVO, OP.BUSCAR] };
+  }
+  sesion.modo = 'seleccion';
+  sesion.resultados = lista;
+  return {
+    reply: `Tus ${lista.length} cliente(s) de hoy, del más reciente al más antiguo. Toca el que necesitas 👇 (o escribe parte del nombre).`,
+    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    opciones: [OP.CANCELAR],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +456,7 @@ async function manejar(sesion, asesor, texto) {
     const campo = cap.campos[cap.paso];
     const esOpcion = (campo.opciones || campo.opcionesSugeridas || []).some((o) => norm(o) === n);
     // Saltos explícitos de flujo (solo frases claras, para no confundir datos con comandos)
-    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo'].includes(intencion) && n.split(' ').length <= 6) {
+    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo', 'hoy', 'menu'].includes(intencion) && n.split(' ').length <= 6) {
       const titulo = TITULOS[cap.tipo];
       return {
         reply: `Estamos en medio de "${titulo}". ¿Lo dejamos y seguimos con lo otro?`,
@@ -462,6 +493,10 @@ async function manejar(sesion, asesor, texto) {
     const num = parseInt(n, 10);
     let elegido = Number.isInteger(num) ? sesion.resultados[num - 1] : null;
     if (!elegido) elegido = sesion.resultados.find((c) => norm(c.nombre_cliente) === n || (c.telefono && c.telefono === t.replace(/\D/g, '')));
+    if (!elegido && !intencion && n.length >= 3) {
+      const parecidos = sesion.resultados.filter((c) => norm(c.nombre_cliente).includes(n) || norm(c.direccion).includes(n));
+      if (parecidos.length === 1) elegido = parecidos[0];
+    }
     if (elegido) return abrirCliente(sesion, elegido);
     if (!intencion) return ejecutarBusqueda(sesion, t); // escribió otro término
     sesion.modo = 'libre';
@@ -473,6 +508,12 @@ async function manejar(sesion, asesor, texto) {
   }
 
   // --- Intenciones ---
+  if (intencion === 'menu') {
+    sesion.modo = 'libre';
+    sesion.accionPendiente = null;
+    return { reply: '¿Qué quieres hacer? 👇', opciones: MENU };
+  }
+  if (intencion === 'hoy') return clientesDeHoy(sesion, asesor);
   if (intencion === 'nuevo') {
     sesion.cliente = null;
     return { ...iniciarCaptura(sesion, 'interesado'), reply: '¡Bien! 🙌 Registremos al interesado. ' + CAMPOS().interesado[0].prompt };
@@ -485,7 +526,10 @@ async function manejar(sesion, asesor, texto) {
     const termino = extraerTermino(t);
     if (termino && !/^cliente$/i.test(termino)) return ejecutarBusqueda(sesion, termino);
     sesion.modo = 'buscar';
-    return { reply: 'Claro 🔎. Escríbeme el nombre, el celular o la cédula del cliente.' };
+    return {
+      reply: 'Claro 🔎. Escríbeme el nombre, el celular o la cédula del cliente.\n\n¿No tienes el dato a la mano? Toca "Mis clientes de hoy" y lo eliges de la lista.',
+      opciones: [OP.HOY, OP.CANCELAR],
+    };
   }
   if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura') {
     if (!sesion.cliente) {

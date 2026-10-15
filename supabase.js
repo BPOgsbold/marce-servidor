@@ -155,6 +155,16 @@ async function buscarPorTelefono(telefono) {
   return adjuntarVentas(data || []);
 }
 
+/** Clientes registrados hoy por el asesor (los más recientes primero). */
+async function clientesDeHoy(asesor) {
+  const supabase = getClient();
+  let q = supabase.from('interesados').select('*').gte('created_at', inicioDeHoy()).order('created_at', { ascending: false }).limit(30);
+  if (asesor) q = q.eq('asesor', asesor);
+  const { data, error } = await q;
+  if (error) throw error;
+  return adjuntarVentas(data || []);
+}
+
 /** Números de hoy. Si se pasa asesor, solo los de ese asesor. */
 async function resumenDeHoy(asesor) {
   const supabase = getClient();
@@ -190,4 +200,5 @@ module.exports = {
   buscarClientes,
   buscarPorTelefono,
   resumenDeHoy,
+  clientesDeHoy,
 };
