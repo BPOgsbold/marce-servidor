@@ -165,6 +165,21 @@ async function clientesDeHoy(asesor) {
   return adjuntarVentas(data || []);
 }
 
+/** Rellamadas pendientes del asesor (de hoy, atrasadas y próximas), en orden de fecha. */
+async function rellamadasPendientes(asesor) {
+  const supabase = getClient();
+  let q = supabase
+    .from('interesados')
+    .select('*')
+    .eq('resultado', 'volver_llamar')
+    .order('rellamar_fecha', { ascending: true })
+    .limit(40);
+  if (asesor) q = q.eq('asesor', asesor);
+  const { data, error } = await q;
+  if (error) throw error;
+  return adjuntarVentas(data || []);
+}
+
 /** Números de hoy. Si se pasa asesor, solo los de ese asesor. */
 async function resumenDeHoy(asesor) {
   const supabase = getClient();
@@ -189,6 +204,7 @@ async function resumenDeHoy(asesor) {
     ventas: ventas || 0,
     noVenta: lista.filter((i) => i.resultado === 'no_venta').length,
     enGestion: lista.filter((i) => !i.resultado || i.resultado === 'en_gestion').length,
+    porRellamar: lista.filter((i) => i.resultado === 'volver_llamar').length,
   };
 }
 
@@ -221,7 +237,21 @@ async function panelDatos(desde, hasta) {
   for (let i = 0; i < interesados.length; i += 300) {
     conVenta.push(...(await adjuntarVentas(interesados.slice(i, i + 300))));
   }
-  return { interesados: conVenta, ventas };
+  const { data: rell, error: eR } = await supabase
+    .from('interesados')
+    .select('*')
+    .eq('resultado', 'volver_llamar')
+    .order('rellamar_fecha', { ascending: true })
+    .limit(3000);
+  if (eR) throw eR;
+  const { data: esc, error: eE } = await supabase
+    .from('interesados')
+    .select('*')
+    .not('escalamiento_tipo', 'is', null)
+    .order('escalamiento_fecha', { ascending: false })
+    .limit(3000);
+  if (eE) throw eE;
+  return { interesados: conVenta, ventas, rellamadas: rell || [], escalamientos: esc || [] };
 }
 
 /** Registra la auditoría de cobertura hecha por el back office. */
@@ -245,4 +275,5 @@ module.exports = {
   buscarPorTelefono,
   resumenDeHoy,
   clientesDeHoy,
+  rellamadasPendientes,
 };

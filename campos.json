@@ -146,5 +146,68 @@
         "No"
       ]
     }
+  ],
+  "rellamar": [
+    {
+      "id": "rellamar_fecha",
+      "label": "Fecha",
+      "prompt": "📞 Listo. ¿Para cuándo quedó la nueva llamada? (hoy, mañana, el viernes o una fecha como 20/10)",
+      "tipo": "fecha_futura",
+      "opcionesSugeridas": [
+        "Hoy",
+        "Mañana",
+        "Pasado mañana"
+      ],
+      "errorMessage": "No entendí la fecha. Escribe hoy, mañana, un día (ej. viernes) o una fecha como 20/10."
+    },
+    {
+      "id": "rellamar_hora",
+      "label": "Hora",
+      "prompt": "¿A qué hora lo llamamos?",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": [
+        "8:00 a. m.",
+        "10:00 a. m.",
+        "12:00 m.",
+        "2:00 p. m.",
+        "4:00 p. m.",
+        "6:00 p. m."
+      ],
+      "errorMessage": "Escribe la hora, por ejemplo 3:30 p. m."
+    },
+    {
+      "id": "rellamar_nota",
+      "label": "Nota",
+      "prompt": "¿Qué te dijo el cliente? (si no hay nada, toca \"Ninguna\")",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": [
+        "Está ocupado",
+        "Lo consulta con la familia",
+        "Llamar al titular",
+        "Ninguna"
+      ],
+      "errorMessage": "Escribe una nota o \"Ninguna\"."
+    }
+  ],
+  "escalamiento": [
+    {
+      "id": "escalamiento_tipo",
+      "label": "Tipo",
+      "prompt": "🛠 ¿Qué escalamiento necesitas?",
+      "opciones": [
+        "Crear dirección",
+        "Validar cédula con cartera",
+        "Validar cobertura / factibilidad",
+        "Error en el sistema de ventas",
+        "Otro"
+      ]
+    },
+    {
+      "id": "escalamiento_detalle",
+      "label": "Detalle",
+      "prompt": "Cuéntame el detalle para el back office (ej. dirección exacta a crear, cédula, qué error sale…).",
+      "regex": "^.{3,}$",
+      "errorMessage": "Escribe un poco más de detalle (mínimo 3 caracteres)."
+    }
   ]
 }
