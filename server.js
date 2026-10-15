@@ -81,7 +81,7 @@ const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
 
 const INTENCIONES = [
   ['cancelar', /^(cancelar|cancela|salir|olvidalo|reiniciar|empezar de nuevo)$/],
-  ['menu', /^(nuevo|nueva|menu|opciones|ayuda|inicio|hola|que puedes hacer|que haces|\+ ?nuevo)[.!?]*$/],
+  ['menu', /^(nuevo|nueva|menu|opciones|ayuda|inicio|hola+|holi+|oli+|ola+|hey|buenas|buen dia|buenos dias|buenas tardes|buenas noches|que mas|que hubo|quiubo|saludos|que puedes hacer|que haces|\+ ?nuevo)[\s.!?,]*(marce)?[.!?]*$/],
   ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
   ['resumen_mes', /resumen\s+del\s+mes|como\s+voy\s+(en\s+)?(el|este)\s+mes|numeros\s+del\s+mes|en\s+el\s+mes/],
   ['resumen_equipo', /resumen\s+(del|de\s+todo\s+el)\s+equipo|como\s+va\s+el\s+equipo|numeros\s+del\s+equipo/],
@@ -954,7 +954,10 @@ async function ayuda(sesion, texto) {
     return { reply: respuesta };
   } catch (e) {
     console.error('Error IA:', e.message);
-    return { reply: 'Ahora mismo no pude pensar la respuesta 😅. Intenta de nuevo en un momento.', error: true };
+    return {
+      reply: 'Esa no la pude responder ahora mismo 😅. Mientras tanto, puedo ayudarte con esto 👇',
+      opciones: sesion.cliente ? accionesPara(sesion.cliente) : MENU,
+    };
   }
 }
 
