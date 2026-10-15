@@ -410,8 +410,8 @@ async function finalizarCaptura(sesion, asesor) {
       sesion.cliente = {
         ...(await db.actualizarInteresado(c.id, {
           resultado: 'no_venta',
-          motivo_no_interes: datos.motivo_no_interes,
-          observaciones: datos.observaciones,
+          motivo_no_interes: datos.motivo_no_interes || null,
+          observaciones: datos.observaciones || null,
         })),
         venta: c.venta,
       };
@@ -503,14 +503,14 @@ async function ejecutarBusqueda(sesion, termino) {
   };
 }
 
-function abrirCliente(sesion, cliente) {
+async function abrirCliente(sesion, cliente) {
   sesion.cliente = cliente;
   sesion.modo = 'libre';
   sesion.resultados = [];
   const pendiente = sesion.accionPendiente;
   sesion.accionPendiente = null;
   if (pendiente) {
-    const inicio = arrancarAccion(sesion, pendiente);
+    const inicio = await arrancarAccion(sesion, pendiente);
     return { ...inicio, tarjetas: [tarjetaDe(cliente)], reply: inicio.reply };
   }
   return {
@@ -529,7 +529,15 @@ function arrancarAccion(sesion, accion) {
     }
     return iniciarCaptura(sesion, 'venta', c.ciudad ? { ciudad: c.ciudad } : {});
   }
-  if (accion === 'no_venta') return iniciarCaptura(sesion, 'no_venta');
+  if (accion === 'no_venta') {
+    // Sin preguntas: si campos.json no tiene campos para "no_venta", se registra de una vez.
+    if (!(CAMPOS().no_venta || []).length) {
+      sesion.modo = 'captura';
+      sesion.captura = { tipo: 'no_venta', campos: [], paso: 0, datos: {} };
+      return finalizarCaptura(sesion, asesorActual);
+    }
+    return iniciarCaptura(sesion, 'no_venta');
+  }
   if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura');
   if (accion === 'escalar') return iniciarCaptura(sesion, 'escalamiento');
   if (accion === 'rellamar') {
@@ -682,7 +690,9 @@ async function ayuda(sesion, texto) {
 // ---------------------------------------------------------------------------
 // Cerebro del chat
 // ---------------------------------------------------------------------------
+let asesorActual = '';
 async function manejar(sesion, asesor, texto) {
+  asesorActual = asesor;
   const t = String(texto || '').trim();
   const n = norm(t);
   const nombre = asesor ? asesor.split(' ')[0] : '';
