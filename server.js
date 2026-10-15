@@ -49,11 +49,14 @@ const OP = {
   NO_VENTA: 'No se interesó',
   COBERTURA: 'Actualizar cobertura',
   CANCELAR: 'Cancelar',
-  HOY: 'Mis clientes de hoy',
+  HOY: 'Mis clientes',
+  RESUMEN_MES: 'Resumen del mes',
   RELLAMAR: 'Volver a llamar',
   RELLAMADAS: 'Mis volver a llamar',
   ESCALAMIENTOS: 'Mis escalamientos',
   VENTAS: 'Mis ventas',
+  OT_ACTIVA: 'OT activa',
+  MIS_OT: 'Mis OT activas',
   ESCALAR: 'Escalamiento',
 };
 const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
@@ -62,11 +65,14 @@ const INTENCIONES = [
   ['cancelar', /^(cancelar|cancela|salir|olvidalo|reiniciar|empezar de nuevo)$/],
   ['menu', /^(nuevo|nueva|menu|opciones|ayuda|inicio|hola|que puedes hacer|que haces|\+ ?nuevo)[.!?]*$/],
   ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
+  ['resumen_mes', /resumen\s+del\s+mes|como\s+voy\s+(en\s+)?(el|este)\s+mes|numeros\s+del\s+mes|en\s+el\s+mes/],
   ['resumen_equipo', /resumen\s+(del|de\s+todo\s+el)\s+equipo|como\s+va\s+el\s+equipo|numeros\s+del\s+equipo/],
   ['resumen', /resumen|consolid|como\s+voy|mis\s+numeros|cuant[oa]s\s+(llevo|tengo|van|ventas|interesados)/],
   ['venta', /registrar\s+(la\s+|una\s+)?venta|(es|fue|hubo|cerre|cerramos|se\s+hizo)\s+(una\s+)?venta|^venta$|ya\s+compro|acepto\s+la\s+oferta/],
   ['no_venta', /no\s+se\s+intereso|no\s+le\s+intereso|no\s+(esta|estuvo)\s+interesad|^no\s+venta$|no\s+quiso|rechazo/],
   ['cobertura', /(actualizar|cambiar|corregir)\s+(la\s+)?cobertura/],
+  ['misot', /mis\s+ot|ots?\s+activas|mis\s+ordenes|seguimiento\s+(de\s+)?ot/],
+  ['ot_activa', /ot\s+activa|tiene\s+(una\s+)?ot\b|orden\s+(de\s+trabajo\s+)?activa|^ot$/],
   ['misventas', /mis\s+ventas|ventas\s+(del\s+mes|instaladas|pendientes)|como\s+van\s+mis\s+ventas|instalacion(es)?\s+pendientes/],
   ['escalamientos', /mis\s+escalamientos|escalamientos\s+pendientes|como\s+van\s+(mis\s+)?escalamientos/],
   ['escalar', /escalar|escalamiento|escalacion|crear\s+(la\s+)?direccion|validar\s+(la\s+)?cedula|cartera|factibilidad/],
@@ -103,7 +109,7 @@ const esCedula = (t) => /^\d{6,10}$/.test(String(t).replace(/[\s.]/g, ''));
 // ---------------------------------------------------------------------------
 // Tarjetas y textos
 // ---------------------------------------------------------------------------
-const ESTADOS = { en_gestion: 'En gestión', venta: 'Venta', no_venta: 'No se interesó', volver_llamar: 'Volver a llamar', escalado: 'Escalado' };
+const ESTADOS = { en_gestion: 'En gestión', venta: 'Venta', no_venta: 'No se interesó', volver_llamar: 'Volver a llamar', escalado: 'Escalado', ot_activa: 'OT activa' };
 
 // ---------------------------------------------------------------------------
 // Fechas de rellamada (hora Colombia)
@@ -194,6 +200,11 @@ function tarjetaDe(c) {
     if (v.instalacion_nota) detalles.push(['Nota instalación', v.instalacion_nota]);
   }
   if (c.resultado === 'no_venta' && c.motivo_no_interes) detalles.push(['Motivo', c.motivo_no_interes]);
+  if (c.ot_activa_numero) {
+    const est = c.ot_activa_estado === 'liberada' ? '✅ liberada' : '⏳ activa';
+    detalles.push(['🧾 OT activa', `${c.ot_activa_numero} · ${est}`]);
+    if (c.ot_activa_respuesta) detalles.push(['Respuesta back', c.ot_activa_respuesta]);
+  }
   if (c.escalamiento_tipo) {
     const est = c.escalamiento_estado === 'resuelto' ? '✅ resuelto' : '⏳ pendiente';
     detalles.push(['🛠 Escalamiento', `${c.escalamiento_tipo} · ${est}`]);
@@ -223,9 +234,9 @@ function accionesPara(c) {
   if (!c) return MENU;
   const sinCobertura = norm(c.cobertura_validada) === 'no';
   if (c.resultado === 'venta') return [OP.BUSCAR, OP.NUEVO];
-  if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.ESCALAR, OP.COBERTURA];
+  if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA];
   if (sinCobertura) return [OP.COBERTURA, OP.ESCALAR, OP.NO_VENTA, OP.RELLAMAR];
-  return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.ESCALAR, OP.COBERTURA];
+  return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA];
 }
 
 function preguntar(campo, cap) {
@@ -238,7 +249,7 @@ function preguntar(campo, cap) {
   if (campo.entrada) resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
   return resp;
 }
-const TITULOS = { interesado: 'Nuevo interesado', venta: 'Registro de venta', no_venta: 'No se interesó', cobertura: 'Cobertura', rellamar: 'Volver a llamar', escalamiento: 'Escalamiento' };
+const TITULOS = { interesado: 'Nuevo interesado', venta: 'Registro de venta', no_venta: 'No se interesó', cobertura: 'Cobertura', rellamar: 'Volver a llamar', escalamiento: 'Escalamiento', ot_activa: 'OT activa' };
 
 const conCliente = (sesion) => (sesion.cliente ? ` de ${sesion.cliente.nombre_cliente}` : '');
 
@@ -435,6 +446,23 @@ async function finalizarCaptura(sesion, asesor) {
         opciones: [OP.NUEVO, OP.BUSCAR, OP.RESUMEN],
       };
     }
+    if (tipo === 'ot_activa') {
+      const actualizado = await db.actualizarInteresado(c.id, {
+        resultado: 'ot_activa',
+        ot_activa_numero: datos.ot_activa_numero,
+        ot_activa_estado: 'activa',
+        ot_activa_fecha: new Date().toISOString(),
+        ot_activa_respuesta: null,
+        ot_activa_por: null,
+        ot_activa_liberada_fecha: null,
+      });
+      sesion.cliente = { ...actualizado, venta: c.venta };
+      return {
+        reply: `🧾 Listo, quedó registrado con **OT activa ${datos.ot_activa_numero}**. Lo ves en la pestaña "OT" para hacerle seguimiento; cuando el back office la marque como liberada te aviso.`,
+        tarjetas: [tarjetaDe(sesion.cliente)],
+        opciones: [OP.RELLAMAR, OP.NUEVO, OP.MIS_OT],
+      };
+    }
     if (tipo === 'escalamiento') {
       const actualizado = await db.actualizarInteresado(c.id, {
         resultado: 'escalado',
@@ -554,6 +582,10 @@ function arrancarAccion(sesion, accion) {
   }
   if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura');
   if (accion === 'escalar') return iniciarCaptura(sesion, 'escalamiento');
+  if (accion === 'ot_activa') {
+    if (c.resultado === 'venta') return { reply: 'Este cliente ya tiene una venta registrada ✅.', opciones: [OP.NUEVO, OP.BUSCAR] };
+    return iniciarCaptura(sesion, 'ot_activa');
+  }
   if (accion === 'rellamar') {
     if (c.resultado === 'venta') return { reply: 'Este cliente ya tiene una venta registrada ✅.', opciones: [OP.NUEVO, OP.BUSCAR] };
     return iniciarCaptura(sesion, 'rellamar');
@@ -574,13 +606,18 @@ async function clientesDeHoy(sesion, asesor) {
   }
   if (!lista.length) {
     sesion.modo = 'libre';
-    return { reply: 'Hoy todavía no has registrado clientes. ¡A darle! 💪', opciones: [OP.NUEVO, OP.BUSCAR] };
+    return { reply: 'No has registrado clientes en los últimos 7 días. Si buscas uno más antiguo, usa "Buscar cliente".', opciones: [OP.NUEVO, OP.BUSCAR] };
   }
   sesion.modo = 'seleccion';
   sesion.resultados = lista;
   return {
-    reply: `Tus ${lista.length} cliente(s) de hoy, del más reciente al más antiguo. Toca el que necesitas 👇 (o escribe parte del nombre).`,
-    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    reply: `Tus ${lista.length} cliente(s) de los últimos 7 días, del más reciente al más antiguo. Toca el que necesitas 👇 (o escribe parte del nombre). Para uno más antiguo usa "Buscar cliente".`,
+    tarjetas: lista.map((c, i) => ({
+      ...tarjetaDe(c),
+      compacta: true,
+      horaCorta: new Date(c.created_at).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }),
+      elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}`,
+    })),
     opciones: [OP.CANCELAR],
   };
 }
@@ -654,6 +691,27 @@ async function misVentas(sesion, asesor) {
   };
 }
 
+async function misOtActivas(sesion, asesor) {
+  let lista;
+  try {
+    lista = await db.otActivasDeAsesor(asesor);
+  } catch (e) {
+    return { reply: `No pude traer las OT activas (${e.message}).`, error: true };
+  }
+  if (!lista.length) {
+    sesion.modo = 'libre';
+    return { reply: 'No tienes clientes con OT activa. 🙌', opciones: MENU };
+  }
+  const lib = lista.filter((c) => c.ot_activa_estado === 'liberada').length;
+  sesion.modo = 'seleccion';
+  sesion.resultados = lista;
+  return {
+    reply: `🧾 Tienes **${lista.length - lib}** cliente(s) con OT activa${lib ? ` y **${lib}** ya liberada(s) ✅ (puedes retomar la venta)` : ''}. Toca uno para abrir la ficha 👇`,
+    tarjetas: lista.map((c, i) => ({ ...tarjetaDe(c), compacta: true, horaCorta: `OT ${c.ot_activa_numero} · ${c.ot_activa_estado === 'liberada' ? '✅ liberada' : '⏳ activa'}`, elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}` })),
+    opciones: [OP.CANCELAR],
+  };
+}
+
 async function misEscalamientos(sesion, asesor) {
   let lista;
   try {
@@ -678,18 +736,21 @@ async function misEscalamientos(sesion, asesor) {
 // ---------------------------------------------------------------------------
 // Resumen
 // ---------------------------------------------------------------------------
-async function resumen(asesor, equipo) {
+async function resumen(asesor, equipo, periodo = 'hoy') {
   try {
-    const r = await db.resumenDeHoy(equipo ? null : asesor);
+    const r = await db.resumenDeHoy(equipo ? null : asesor, periodo);
     const efect = r.interesados ? Math.round((r.ventas / r.interesados) * 100) : 0;
     const quien = equipo ? 'del equipo' : asesor ? `de ${asesor.split(' ')[0]}` : '';
-    let reply = `📊 Así va el día ${quien}:`;
-    if (!r.interesados && !r.ventas) reply = `📊 Hoy todavía no hay registros ${quien}. ¡A darle! 💪`;
+    const esMes = periodo === 'mes';
+    let reply = esMes ? `📊 Así va el mes ${quien}:` : `📊 Así va el día ${quien}:`;
+    if (!r.interesados && !r.ventas) reply = esMes ? `📊 Este mes todavía no hay registros ${quien}.` : `📊 Hoy todavía no hay registros ${quien}. ¡A darle! 💪`;
     else if (r.enGestion) reply += `\n\nTienes **${r.enGestion}** interesado(s) todavía en gestión — búscalos para cerrarlos.`;
     return {
       reply,
       resumen: {
-        titulo: `Hoy · ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota', weekday: 'long', day: 'numeric', month: 'long' })}`,
+        titulo: esMes
+          ? `Este mes · ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota', month: 'long', year: 'numeric' })}`
+          : `Hoy · ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota', weekday: 'long', day: 'numeric', month: 'long' })}`,
         items: [
           { label: 'Interesados', valor: r.interesados },
           { label: 'Ventas', valor: r.ventas, destacado: true },
@@ -700,7 +761,7 @@ async function resumen(asesor, equipo) {
           { label: 'Por rellamar', valor: r.porRellamar ?? 0 },
         ],
       },
-      opciones: equipo ? [OP.RESUMEN, OP.NUEVO] : [OP.RESUMEN_EQUIPO, OP.NUEVO, OP.BUSCAR],
+      opciones: esMes ? [OP.RESUMEN, OP.RESUMEN_EQUIPO, OP.VENTAS] : equipo ? [OP.RESUMEN, OP.RESUMEN_MES, OP.NUEVO] : [OP.RESUMEN_MES, OP.RESUMEN_EQUIPO, OP.VENTAS],
     };
   } catch (e) {
     console.error('Error en resumen:', e);
@@ -754,6 +815,8 @@ async function manejar(sesion, asesor, texto) {
       if (pend) aviso = `\n\n📞 Ojo: tienes **${pend}** rellamada(s) para hoy. Mírala(s) en la pestaña "Volver a llamar".`;
       const hace2 = Date.now() - 2 * 86400000;
       const nuevas = (await db.ventasDeAsesor(asesor)).filter((v) => v.estado_instalacion === 'instalada' && new Date(v.instalacion_fecha).getTime() > hace2).length;
+      const otLib = (await db.otActivasDeAsesor(asesor)).filter((c) => c.ot_activa_estado === 'liberada' && Date.now() - new Date(c.ot_activa_liberada_fecha).getTime() < 2 * 86400000).length;
+      if (otLib) aviso += `\n\n🧾 **${otLib}** cliente(s) con OT activa ya quedaron **liberados**. Mira la pestaña "OT" y retoma la venta.`;
       if (nuevas) aviso += `\n\n🎉 ¡Buenas noticias! **${nuevas}** de tus ventas quedó(aron) **instalada(s)**. Mira la pestaña "Ventas".`;
     } catch (_) {}
     return {
@@ -803,7 +866,7 @@ async function manejar(sesion, asesor, texto) {
     const campo = cap.campos[cap.paso];
     const esOpcion = (campo.opciones || campo.opcionesSugeridas || []).some((o) => norm(o) === n);
     // Saltos explícitos de flujo (solo frases claras, para no confundir datos con comandos)
-    if (!esOpcion && ['resumen', 'resumen_equipo', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos', 'misventas'].includes(intencion) && n.split(' ').length <= 6) {
+    if (!esOpcion && ['resumen', 'resumen_equipo', 'resumen_mes', 'buscar', 'nuevo', 'hoy', 'menu', 'rellamadas', 'escalamientos', 'misventas', 'misot'].includes(intencion) && n.split(' ').length <= 6) {
       const titulo = TITULOS[cap.tipo];
       return {
         reply: `Estamos en medio de "${titulo}". ¿Lo dejamos y seguimos con lo otro?`,
@@ -865,9 +928,9 @@ async function manejar(sesion, asesor, texto) {
     sesion.cliente = null;
     return { ...iniciarCaptura(sesion, 'interesado'), reply: '¡Bien! 🙌 Registremos al interesado. ' + CAMPOS().interesado[0].prompt };
   }
-  if (intencion === 'resumen' || intencion === 'resumen_equipo') {
+  if (intencion === 'resumen' || intencion === 'resumen_equipo' || intencion === 'resumen_mes') {
     sesion.modo = 'libre';
-    return resumen(asesor, intencion === 'resumen_equipo');
+    return resumen(asesor, intencion === 'resumen_equipo', intencion === 'resumen_mes' ? 'mes' : 'hoy');
   }
   if (intencion === 'buscar') {
     const termino = extraerTermino(t);
@@ -881,11 +944,12 @@ async function manejar(sesion, asesor, texto) {
   if (intencion === 'rellamadas') return misRellamadas(sesion, asesor);
   if (intencion === 'escalamientos') return misEscalamientos(sesion, asesor);
   if (intencion === 'misventas') return misVentas(sesion, asesor);
-  if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar') {
+  if (intencion === 'misot') return misOtActivas(sesion, asesor);
+  if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar' || intencion === 'ot_activa') {
     if (!sesion.cliente) {
       sesion.accionPendiente = intencion;
       sesion.modo = 'buscar';
-      const que = { venta: 'registrar la venta', no_venta: 'registrar que no se interesó', cobertura: 'actualizar la cobertura', rellamar: 'programar la rellamada', escalar: 'hacer el escalamiento' }[intencion];
+      const que = { venta: 'registrar la venta', no_venta: 'registrar que no se interesó', cobertura: 'actualizar la cobertura', rellamar: 'programar la rellamada', escalar: 'hacer el escalamiento', ot_activa: 'registrar la OT activa' }[intencion];
       return { reply: `Listo, para ${que} primero dime de qué cliente: nombre, celular o cédula.`, opciones: [OP.CANCELAR] };
     }
     return arrancarAccion(sesion, intencion);
@@ -909,7 +973,7 @@ app.get('/api/mis-pendientes', async (req, res) => {
   try {
     const asesor = String(req.query.asesor || '').trim();
     if (!asesor) return res.status(400).json({ error: 'Falta el asesor' });
-    const [rell, escs, vts] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor), db.ventasDeAsesor(asesor)]);
+    const [rell, escs, vts, ots] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor), db.ventasDeAsesor(asesor), db.otActivasDeAsesor(asesor)]);
     const hoy = hoyCO();
     const corto = (c) => ({
       id: c.id,
@@ -934,6 +998,15 @@ app.get('/api/mis-pendientes', async (req, res) => {
         respuesta: c.escalamiento_respuesta,
         por: c.escalamiento_por,
         fecha: c.escalamiento_fecha,
+      })),
+      otActivas: ots.map((c) => ({
+        ...corto(c),
+        ot: c.ot_activa_numero,
+        estado: c.ot_activa_estado === 'liberada' ? 'liberada' : 'activa',
+        respuesta: c.ot_activa_respuesta,
+        por: c.ot_activa_por,
+        fecha: c.ot_activa_fecha,
+        liberadaReciente: c.ot_activa_estado === 'liberada' && Date.now() - new Date(c.ot_activa_liberada_fecha).getTime() < 2 * 86400000,
       })),
       ventas: vts.map((v) => ({
         id: v.interesado_id || v.id,
@@ -985,6 +1058,23 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
     res.json(await db.panelDatos(desde, hasta));
   } catch (err) {
     console.error('Error panel/datos:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/panel/ot', exigirClave, async (req, res) => {
+  try {
+    const { id, estado, respuesta, auditor } = req.body || {};
+    if (!id || !['liberada', 'activa'].includes(estado)) return res.status(400).json({ error: 'Falta id o el estado no es válido.' });
+    const interesado = await db.actualizarInteresado(id, {
+      ot_activa_estado: estado,
+      ot_activa_respuesta: respuesta || null,
+      ot_activa_por: estado === 'liberada' ? auditor || null : null,
+      ot_activa_liberada_fecha: estado === 'liberada' ? new Date().toISOString() : null,
+    });
+    res.json({ ok: true, interesado });
+  } catch (err) {
+    console.error('Error panel/ot:', err);
     res.status(500).json({ error: err.message });
   }
 });

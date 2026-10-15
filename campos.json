@@ -188,5 +188,14 @@
       "regex": "^.{3,}$",
       "errorMessage": "Escribe un poco más de detalle (mínimo 3 caracteres)."
     }
+  ],
+  "ot_activa": [
+    {
+      "id": "ot_activa_numero",
+      "label": "OT activa",
+      "prompt": "🧾 ¿Cuál es el número de la OT activa?",
+      "regex": "^.{2,}$",
+      "errorMessage": "Escribe el número de la OT (mínimo 2 caracteres)."
+    }
   ]
 }

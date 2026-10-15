@@ -33,6 +33,16 @@ function inicioDeHoy() {
   const ahora = new Date(Date.now() - 5 * 3600 * 1000);
   return `${ahora.toISOString().slice(0, 10)}T00:00:00-05:00`;
 }
+// Inicio de un periodo en hora Colombia: 'hoy' | 'semana' (últimos 7 días) | 'mes' (desde el 1 del mes)
+function inicioDe(periodo) {
+  const ahora = new Date(Date.now() - 5 * 3600 * 1000);
+  if (periodo === 'mes') return `${ahora.toISOString().slice(0, 8)}01T00:00:00-05:00`;
+  if (periodo === 'semana') {
+    const d = new Date(ahora.getTime() - 6 * 86400000);
+    return `${d.toISOString().slice(0, 10)}T00:00:00-05:00`;
+  }
+  return inicioDeHoy();
+}
 
 async function crearInteresado(asesor, datos) {
   const supabase = getClient();
@@ -156,9 +166,9 @@ async function buscarPorTelefono(telefono) {
 }
 
 /** Clientes registrados hoy por el asesor (los más recientes primero). */
-async function clientesDeHoy(asesor) {
+async function clientesDeHoy(asesor, periodo = 'semana') {
   const supabase = getClient();
-  let q = supabase.from('interesados').select('*').gte('created_at', inicioDeHoy()).order('created_at', { ascending: false }).limit(30);
+  let q = supabase.from('interesados').select('*').gte('created_at', inicioDe(periodo)).order('created_at', { ascending: false }).limit(60);
   if (asesor) q = q.eq('asesor', asesor);
   const { data, error } = await q;
   if (error) throw error;
@@ -215,10 +225,27 @@ async function actualizarVenta(id, cambios) {
   return data;
 }
 
-/** Números de hoy. Si se pasa asesor, solo los de ese asesor. */
-async function resumenDeHoy(asesor) {
+/** Clientes del asesor con OT activa (activas + liberadas en los últimos 7 días). */
+async function otActivasDeAsesor(asesor) {
   const supabase = getClient();
-  const desde = inicioDeHoy();
+  const hace7 = new Date(Date.now() - 7 * 86400000).toISOString();
+  let q = supabase
+    .from('interesados')
+    .select('*')
+    .not('ot_activa_numero', 'is', null)
+    .or(`ot_activa_estado.eq.activa,ot_activa_liberada_fecha.gte.${hace7}`)
+    .order('ot_activa_fecha', { ascending: false })
+    .limit(60);
+  if (asesor) q = q.eq('asesor', asesor);
+  const { data, error } = await q;
+  if (error) throw error;
+  return adjuntarVentas(data || []);
+}
+
+/** Números de hoy. Si se pasa asesor, solo los de ese asesor. */
+async function resumenDeHoy(asesor, periodo = 'hoy') {
+  const supabase = getClient();
+  const desde = inicioDe(periodo);
 
   let q1 = supabase.from('interesados').select('cobertura_validada,resultado').gte('created_at', desde);
   if (asesor) q1 = q1.eq('asesor', asesor);
@@ -293,7 +320,14 @@ async function panelDatos(desde, hasta) {
     .order('created_at', { ascending: false })
     .limit(3000);
   if (eV) throw eV;
-  return { interesados: conVenta, ventas, rellamadas: rell || [], escalamientos: esc || [], ventasPendientes: vPend || [] };
+  const { data: ots, error: eO } = await supabase
+    .from('interesados')
+    .select('*')
+    .not('ot_activa_numero', 'is', null)
+    .order('ot_activa_fecha', { ascending: false })
+    .limit(3000);
+  if (eO) throw eO;
+  return { interesados: conVenta, ventas, rellamadas: rell || [], escalamientos: esc || [], ventasPendientes: vPend || [], otActivas: ots || [] };
 }
 
 /** Registra la auditoría de cobertura hecha por el back office. */
@@ -321,4 +355,5 @@ module.exports = {
   escalamientosDeAsesor,
   ventasDeAsesor,
   actualizarVenta,
+  otActivasDeAsesor,
 };
