@@ -113,31 +113,7 @@
       "errorMessage": "Escribe una observación o \"Ninguna\"."
     }
   ],
-  "no_venta": [
-    {
-      "id": "motivo_no_interes",
-      "label": "Motivo",
-      "prompt": "Entendido, igual sirve para aprender. ¿Cuál fue el motivo principal?",
-      "opciones": [
-        "Precio",
-        "Ya tiene otro operador",
-        "Mal momento",
-        "No decide él/ella",
-        "Sin cobertura",
-        "Otro"
-      ]
-    },
-    {
-      "id": "observaciones",
-      "label": "Observaciones",
-      "prompt": "¿Alguna observación? (si no hay, toca \"Ninguna\")",
-      "regex": "^.{1,}$",
-      "opcionesSugeridas": [
-        "Ninguna"
-      ],
-      "errorMessage": "Escribe una observación o \"Ninguna\"."
-    }
-  ],
+  "no_venta": [],
   "cobertura": [
     {
       "id": "cobertura",
