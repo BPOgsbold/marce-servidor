@@ -8,6 +8,21 @@
       "errorMessage": "Escribe la dirección completa (mínimo 5 caracteres)."
     },
     {
+      "id": "ciudad",
+      "label": "Ciudad",
+      "prompt": "¿En qué ciudad o municipio queda esa dirección?",
+      "regex": "^.{3,}$",
+      "opcionesSugeridas": [
+        "Bogotá",
+        "Medellín",
+        "Cali",
+        "Barranquilla",
+        "Cartagena",
+        "Bucaramanga"
+      ],
+      "errorMessage": "Escribe el nombre de la ciudad o municipio."
+    },
+    {
       "id": "nombre_cliente",
       "label": "Nombre",
       "prompt": "¿Cómo se llama el cliente?",
@@ -26,7 +41,10 @@
       "id": "cobertura",
       "label": "Cobertura",
       "prompt": "¿Esa dirección tiene cobertura?",
-      "opciones": ["Sí", "No"]
+      "opciones": [
+        "Sí",
+        "No"
+      ]
     }
   ],
   "venta": [
@@ -84,14 +102,20 @@
       "id": "hora_agenda",
       "label": "Franja",
       "prompt": "¿En qué franja quedó la instalación?",
-      "opciones": ["AM (8:00 - 12:00)", "PM (12:00 - 5:00)", "Todo el día"]
+      "opciones": [
+        "AM (8:00 - 12:00)",
+        "PM (12:00 - 5:00)",
+        "Todo el día"
+      ]
     },
     {
       "id": "observaciones",
       "label": "Observaciones",
       "prompt": "Ya casi. ¿Alguna observación? (si no hay, toca \"Ninguna\")",
       "regex": "^.{1,}$",
-      "opcionesSugeridas": ["Ninguna"],
+      "opcionesSugeridas": [
+        "Ninguna"
+      ],
       "errorMessage": "Escribe una observación o \"Ninguna\"."
     }
   ],
@@ -100,14 +124,23 @@
       "id": "motivo_no_interes",
       "label": "Motivo",
       "prompt": "Entendido, igual sirve para aprender. ¿Cuál fue el motivo principal?",
-      "opciones": ["Precio", "Ya tiene otro operador", "Mal momento", "No decide él/ella", "Sin cobertura", "Otro"]
+      "opciones": [
+        "Precio",
+        "Ya tiene otro operador",
+        "Mal momento",
+        "No decide él/ella",
+        "Sin cobertura",
+        "Otro"
+      ]
     },
     {
       "id": "observaciones",
       "label": "Observaciones",
       "prompt": "¿Alguna observación? (si no hay, toca \"Ninguna\")",
       "regex": "^.{1,}$",
-      "opcionesSugeridas": ["Ninguna"],
+      "opcionesSugeridas": [
+        "Ninguna"
+      ],
       "errorMessage": "Escribe una observación o \"Ninguna\"."
     }
   ],
@@ -116,7 +149,10 @@
       "id": "cobertura",
       "label": "Cobertura",
       "prompt": "¿Cómo quedó la cobertura de esa dirección?",
-      "opciones": ["Sí", "No"]
+      "opciones": [
+        "Sí",
+        "No"
+      ]
     }
   ]
 }

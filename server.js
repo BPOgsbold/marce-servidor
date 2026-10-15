@@ -102,7 +102,7 @@ function tarjetaDe(c) {
   const cob = norm(c.cobertura_validada);
   const detalles = [
     ['Teléfono', c.telefono],
-    ['Dirección', c.direccion],
+    ['Dirección', [c.direccion, c.ciudad].filter(Boolean).join(' · ')],
     ['Cobertura', cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar'],
     ['Registrado', [fecha, c.asesor].filter(Boolean).join(' · ')],
   ];
