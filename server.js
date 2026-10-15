@@ -510,17 +510,37 @@ async function manejar(sesion, asesor, texto) {
 // ---------------------------------------------------------------------------
 app.get('/api/health', (req, res) => res.json({ ok: true, ia: iaDisponible() }));
 
+// El estado de la conversación viaja con cada mensaje (lo guarda la extensión).
+// Así, aunque Render reinicie o "duerma" el servidor, no se pierde el paso
+// en el que iba el asesor.
+function serializar(sesion) {
+  const { captura, ...resto } = sesion;
+  return {
+    ...resto,
+    captura: captura ? { tipo: captura.tipo, paso: captura.paso, datos: captura.datos } : null,
+  };
+}
+function hidratar(estado) {
+  if (!estado || typeof estado !== 'object') return null;
+  const sesion = { ...nuevaSesion(), ...estado };
+  if (sesion.captura) {
+    const campos = CAMPOS()[sesion.captura.tipo];
+    if (!campos) sesion.captura = null;
+    else sesion.captura = { ...sesion.captura, campos, paso: Math.min(sesion.captura.paso || 0, campos.length - 1) };
+  }
+  if (sesion.modo === 'captura' && !sesion.captura) sesion.modo = 'libre';
+  return sesion;
+}
+
 app.post('/api/chat', async (req, res) => {
   try {
-    const { sessionId, asesor, message } = req.body || {};
+    const { sessionId, asesor, message, estado } = req.body || {};
     if (!sessionId || !message) return res.status(400).json({ error: 'Falta sessionId o message' });
-    let sesion = sesiones.get(sessionId);
-    if (!sesion) {
-      sesion = nuevaSesion();
-      sesiones.set(sessionId, sesion);
-    }
+    const sesion = hidratar(estado) || sesiones.get(sessionId) || nuevaSesion();
     const respuesta = await manejar(sesion, asesor, message);
-    res.json(respuesta);
+    sesiones.set(sessionId, sesion);
+    if (sesiones.size > 2000) sesiones.delete(sesiones.keys().next().value);
+    res.json({ ...respuesta, estado: serializar(sesion) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'Error interno' });
