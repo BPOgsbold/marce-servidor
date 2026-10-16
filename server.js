@@ -33,6 +33,26 @@ async function refrescarConfig(forzar) {
 const activo = (clave) => Boolean(CONFIG.datos[clave]?.valor);
 
 // ---------------------------------------------------------------------------
+// Asesores: cada uno entra con su cédula; el nombre sale de la tabla "asesores".
+// ---------------------------------------------------------------------------
+const ASESORES = new Map(); // cédula → { fila, ts }
+const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+async function resolverAsesor(cedula) {
+  const ced = soloDigitos(cedula);
+  if (!ced) return null;
+  const guardado = ASESORES.get(ced);
+  if (guardado && Date.now() - guardado.ts < 60000) return guardado.fila;
+  const fila = await db.buscarAsesor(ced);
+  ASESORES.set(ced, { fila, ts: Date.now() });
+  return fila;
+}
+const AVISO_CEDULA = {
+  no_existe: '⚠️ Tu cédula no está registrada en Marce. Pídele a tu supervisor que te agregue en el panel (pestaña 👥 Asesores).',
+  inactivo: '⚠️ Tu usuario está desactivado en Marce. Habla con tu supervisor.',
+};
+
+
+// ---------------------------------------------------------------------------
 // Sesiones (una por ventana de chat). Viven en memoria del servidor.
 // ---------------------------------------------------------------------------
 const sesiones = new Map();
@@ -74,6 +94,7 @@ const OP = {
   OT_ACTIVA: 'OT activa',
   MIS_OT: 'Mis OT activas',
   EDITAR: '✏️ Editar datos',
+  NOTA: '📝 Agregar nota',
   ALERTAS: '🔥 Clientes recuperables',
   ESCALAR: 'Escalamiento',
 };
@@ -95,6 +116,7 @@ const INTENCIONES = [
   ['misventas', /mis\s+ventas|ventas\s+(del\s+mes|instaladas|pendientes)|como\s+van\s+mis\s+ventas|instalacion(es)?\s+pendientes/],
   ['escalamientos', /mis\s+escalamientos|escalamientos\s+pendientes|como\s+van\s+(mis\s+)?escalamientos/],
   ['escalar', /escalar|escalamiento|escalacion|crear\s+(la\s+)?direccion|validar\s+(la\s+)?cedula|cartera|factibilidad/],
+  ['nota', /agregar\s+(una\s+)?nota|dejar\s+(una\s+)?nota|poner\s+(una\s+)?nota|^nota$|^observaci/],
   ['editar', /editar|corregir\s+(un\s+|el\s+|los\s+)?datos?|cambiar\s+(un\s+|el\s+|los\s+)?datos?|actualizar\s+(un\s+|el\s+|los\s+)?datos?|modificar|me\s+equivoque/],
   ['rellamadas', /mis\s+volver\s+a\s+llamar|mis\s+rellamadas|rellamadas\s+(de\s+hoy|pendientes)|a\s+quien\s+(debo|tengo\s+que)\s+(volver\s+a\s+)?llamar|^rellamadas$|pendientes\s+por\s+llamar/],
   ['rellamar', /volver\s+a\s+llamar|rellamar|reprogramar|agendar\s+(una\s+)?(llamada|rellamada)|llamar\s+(despues|mas\s+tarde|otro\s+dia|manana)/],
@@ -299,10 +321,10 @@ function tarjetaDe(c) {
 function accionesPara(c) {
   if (!c) return MENU;
   const sinCobertura = norm(c.cobertura_validada) === 'no';
-  if (c.resultado === 'venta') return [OP.EDITAR, OP.BUSCAR, OP.NUEVO];
-  if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.EDITAR];
-  if (sinCobertura) return [OP.COBERTURA, OP.ESCALAR, OP.NO_VENTA, OP.RELLAMAR, OP.EDITAR];
-  return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.EDITAR];
+  if (c.resultado === 'venta') return [OP.NOTA, OP.EDITAR, OP.BUSCAR, OP.NUEVO];
+  if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.NOTA, OP.EDITAR];
+  if (sinCobertura) return [OP.COBERTURA, OP.ESCALAR, OP.NO_VENTA, OP.RELLAMAR, OP.NOTA, OP.EDITAR];
+  return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.NOTA, OP.EDITAR];
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +337,9 @@ function campoEditable(id) {
   const todos = [...(CAMPOS().interesado || []), ...(CAMPOS().venta || [])];
   const def = todos.find((c) => c.id === id);
   if (!def) return null;
+  if (id === 'observaciones') {
+    return { ...def, label: 'Observaciones', prompt: '📝 ¿Qué nota quieres dejar sobre este cliente? Escríbela como quieras 👇', opcionesSugeridas: undefined, regex: '^.{2,}$', errorMessage: 'Escribe la nota (mínimo 2 caracteres).' };
+  }
   return { ...def, prompt: `✏️ Escribe el nuevo dato de **${def.label.toLowerCase()}**:`, opcionesSugeridas: undefined };
 }
 function editablesPara(c) {
@@ -326,6 +351,15 @@ function valorActual(c, id) {
   if (id === 'observaciones') return c.venta?.observaciones || c.observaciones || '';
   if (EDITABLES_VENTA.includes(id)) return c.venta?.[id] || '';
   return c[id] || '';
+}
+function pedirNota(sesion) {
+  const c = sesion.cliente;
+  const campo = campoEditable('observaciones');
+  sesion.modo = 'captura';
+  sesion.captura = { tipo: 'editar', campoId: 'observaciones', campos: [campo], paso: 0, datos: {} };
+  const actual = valorActual(c, 'observaciones');
+  const previa = actual && norm(actual) !== 'ninguna' ? `Nota actual:\n${actual}\n\nLo que escribas se **agrega** (no se borra lo anterior).\n\n` : '';
+  return { reply: `${previa}📝 ¿Qué nota quieres dejar sobre **${c.nombre_cliente || 'este cliente'}**? Escríbela como quieras 👇`, opciones: [OP.CANCELAR] };
 }
 function pedirQueEditar(sesion) {
   const c = sesion.cliente;
@@ -564,13 +598,19 @@ async function finalizarCaptura(sesion, asesor) {
     }
     if (tipo === 'editar') {
       const id = campoEditadoId || Object.keys(datos)[0];
-      const valor = datos[id];
+      let valor = datos[id];
+      if (id === 'observaciones') {
+        const previa = valorActual(c, 'observaciones');
+        const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+        const nueva = `[${cuando}] ${valor}`;
+        valor = previa && norm(previa) !== 'ninguna' ? `${previa}\n${nueva}` : nueva;
+      }
       const etiqueta = (campoEditable(id)?.label || id).toLowerCase();
       if (EDITABLES_INTERESADO.includes(id) || id === 'observaciones') await db.actualizarInteresado(c.id, { [id]: valor });
       if (c.venta && (EDITABLES_VENTA.includes(id) || EDITABLES_INTERESADO.includes(id))) await db.actualizarVenta(c.venta.id, { [id]: valor });
       sesion.cliente = await db.obtenerCliente(c.id);
       return {
-        reply: `✅ Listo, actualicé **${etiqueta}**: ${valor}`,
+        reply: id === 'observaciones' ? '📝 ¡Nota guardada! Queda en la ficha del cliente y el back la ve en el panel.' : `✅ Listo, actualicé **${etiqueta}**: ${valor}`,
         tarjetas: [tarjetaDe(sesion.cliente)],
         opciones: [OP.EDITAR, ...accionesPara(sesion.cliente).filter((o) => o !== OP.EDITAR)].slice(0, 6),
       };
@@ -733,6 +773,7 @@ function arrancarAccion(sesion, accion) {
   if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura', { _direccion: c.direccion || '', _ciudad: c.ciudad || '' });
   if (accion === 'escalar') return iniciarCaptura(sesion, 'escalamiento');
   if (accion === 'editar') return pedirQueEditar(sesion);
+  if (accion === 'nota') return pedirNota(sesion);
   if (accion === 'ot_activa') {
     if (c.resultado === 'venta') return { reply: 'Este cliente ya tiene una venta registrada ✅.', opciones: [OP.NUEVO, OP.BUSCAR] };
     return iniciarCaptura(sesion, 'ot_activa');
@@ -1062,6 +1103,7 @@ async function manejar(sesion, asesor, texto) {
   // --- Eligiendo qué dato editar ---
   if (sesion.modo === 'editar_elegir') {
     const campo = editablesPara(sesion.cliente).find((f) => norm(f.label) === n || (norm(f.label).startsWith(n) && n.length >= 3));
+    if (campo && campo.id === 'observaciones') return pedirNota(sesion);
     if (campo) {
       sesion.modo = 'captura';
       sesion.captura = { tipo: 'editar', campoId: campo.id, campos: [campo], paso: 0, datos: {} };
@@ -1138,11 +1180,11 @@ async function manejar(sesion, asesor, texto) {
   if (intencion === 'misventas') return misVentas(sesion, asesor);
   if (intencion === 'misot') return misOtActivas(sesion, asesor);
   if (intencion === 'alertas') return misAlertas(sesion, asesor);
-  if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar' || intencion === 'ot_activa' || intencion === 'editar') {
+  if (intencion === 'venta' || intencion === 'no_venta' || intencion === 'cobertura' || intencion === 'rellamar' || intencion === 'escalar' || intencion === 'ot_activa' || intencion === 'editar' || intencion === 'nota') {
     if (!sesion.cliente) {
       sesion.accionPendiente = intencion;
       sesion.modo = 'buscar';
-      const que = { venta: 'registrar la venta', no_venta: 'registrar que no se interesó', cobertura: 'actualizar la cobertura', rellamar: 'programar la rellamada', escalar: 'hacer el escalamiento', ot_activa: 'registrar la OT activa', editar: 'editar los datos' }[intencion];
+      const que = { venta: 'registrar la venta', no_venta: 'registrar que no se interesó', cobertura: 'actualizar la cobertura', rellamar: 'programar la rellamada', escalar: 'hacer el escalamiento', ot_activa: 'registrar la OT activa', editar: 'editar los datos', nota: 'agregar la nota' }[intencion];
       return { reply: `Listo, para ${que} primero dime de qué cliente: nombre, celular o cédula.`, opciones: [OP.CANCELAR] };
     }
     return arrancarAccion(sesion, intencion);
@@ -1162,9 +1204,27 @@ async function manejar(sesion, asesor, texto) {
 app.get('/api/health', (req, res) => res.json({ ok: true, ia: iaDisponible() }));
 
 // Pestañas de la ventana: "Volver a llamar" y "Escalamientos" del asesor.
+// La extensión valida la cédula del asesor y recibe su nombre oficial.
+app.get('/api/asesor', async (req, res) => {
+  try {
+    const fila = await resolverAsesor(req.query.cedula);
+    if (!fila) return res.status(404).json({ error: AVISO_CEDULA.no_existe });
+    if (!fila.activo) return res.status(403).json({ error: AVISO_CEDULA.inactivo });
+    res.json({ ok: true, cedula: fila.cedula, nombre: fila.nombre, campana: fila.campana });
+  } catch (err) {
+    console.error('Error /api/asesor:', err.message);
+    res.status(500).json({ error: /asesores/.test(err.message) ? 'Falta crear la tabla de asesores en Supabase (supabase_asesores.sql).' : err.message });
+  }
+});
+
 app.get('/api/mis-pendientes', async (req, res) => {
   try {
-    const asesor = String(req.query.asesor || '').trim();
+    let asesor = String(req.query.asesor || '').trim();
+    if (req.query.cedula) {
+      const fila = await resolverAsesor(req.query.cedula);
+      if (!fila || !fila.activo) return res.status(403).json({ error: AVISO_CEDULA[fila ? 'inactivo' : 'no_existe'] });
+      asesor = fila.nombre;
+    }
     if (!asesor) return res.status(400).json({ error: 'Falta el asesor' });
     const [rell, escs, vts, ots, alertas] = await Promise.all([db.rellamadasPendientes(asesor), db.escalamientosDeAsesor(asesor), db.ventasDeAsesor(asesor), db.otActivasDeAsesor(asesor), alertasDe(asesor).catch(() => [])]);
     const hoy = hoyCO();
@@ -1329,6 +1389,82 @@ app.post('/api/panel/config', exigirClave, async (req, res) => {
   }
 });
 
+// ---------- 👥 Asesores (panel) ----------
+const normNombre = (s) => norm(s).replace(/\s+/g, ' ').trim();
+app.get('/api/panel/asesores', exigirClave, async (req, res) => {
+  try {
+    const [lista, conteo] = await Promise.all([db.listarAsesores(), db.conteoPorAsesor()]);
+    const registrados = new Set(lista.map((a) => a.nombre));
+    const asesores = lista.map((a) => ({ ...a, interesados: conteo.interesados[a.nombre] || 0, ventas: conteo.ventas[a.nombre] || 0 }));
+    const nombres = new Set([...Object.keys(conteo.interesados), ...Object.keys(conteo.ventas)]);
+    const sinRegistrar = [...nombres]
+      .filter((n) => !registrados.has(n))
+      .map((n) => ({ nombre: n, interesados: conteo.interesados[n] || 0, ventas: conteo.ventas[n] || 0 }))
+      .sort((x, y) => y.interesados + y.ventas - (x.interesados + x.ventas));
+    res.json({ asesores, sinRegistrar });
+  } catch (err) {
+    console.error('Error panel/asesores:', err.message);
+    res.status(500).json({ error: /asesores/.test(err.message) ? 'Falta crear la tabla de asesores en Supabase (supabase_asesores.sql).' : err.message });
+  }
+});
+app.post('/api/panel/asesores', exigirClave, async (req, res) => {
+  try {
+    const cedula = soloDigitos(req.body?.cedula);
+    const nombre = String(req.body?.nombre || '').replace(/\s+/g, ' ').trim();
+    const { campana, activo } = req.body || {};
+    if (cedula.length < 5 || nombre.length < 3) return res.status(400).json({ error: 'Escribe la cédula y el nombre completo.' });
+    const antes = await db.buscarAsesor(cedula);
+    // Mismo nombre que otro asesor (otra cédula): no se permite, se mezclarían los registros.
+    const choca = (await db.listarAsesores()).find((a) => a.cedula !== cedula && normNombre(a.nombre) === normNombre(nombre));
+    if (choca) return res.status(400).json({ error: `Ese nombre ya lo tiene la cédula ${choca.cedula}.` });
+    const fila = await db.guardarAsesor({ cedula, nombre, campana: campana ?? antes?.campana, activo: activo ?? antes?.activo ?? true });
+    let movidos = null;
+    if (antes && antes.nombre !== nombre) movidos = await db.renombrarAsesor(antes.nombre, nombre); // su historial se va con él
+    ASESORES.delete(cedula);
+    res.json({ ok: true, asesor: fila, movidos });
+  } catch (err) {
+    console.error('Error panel/asesores POST:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+// Carga varios asesores de una vez (desde un Excel en el panel).
+app.post('/api/panel/asesores/lote', exigirClave, async (req, res) => {
+  try {
+    const filas = Array.isArray(req.body?.asesores) ? req.body.asesores.slice(0, 2000) : [];
+    const existentes = await db.listarAsesores();
+    const porCedula = new Map(existentes.map((a) => [a.cedula, a]));
+    let nuevos = 0, actualizados = 0, omitidos = 0;
+    for (const f of filas) {
+      const cedula = soloDigitos(f.cedula);
+      const nombre = String(f.nombre || '').replace(/\s+/g, ' ').trim();
+      if (cedula.length < 5 || nombre.length < 3) { omitidos += 1; continue; }
+      const antes = porCedula.get(cedula);
+      if (antes && antes.nombre === nombre && (antes.campana || '') === (f.campana || '')) { omitidos += 1; continue; }
+      await db.guardarAsesor({ cedula, nombre, campana: f.campana || antes?.campana || null, activo: antes ? antes.activo : true });
+      if (antes && antes.nombre !== nombre) await db.renombrarAsesor(antes.nombre, nombre);
+      ASESORES.delete(cedula);
+      antes ? (actualizados += 1) : (nuevos += 1);
+    }
+    res.json({ ok: true, nuevos, actualizados, omitidos });
+  } catch (err) {
+    console.error('Error panel/asesores/lote:', err.message);
+    res.status(500).json({ error: /asesores/.test(err.message) ? 'Falta crear la tabla de asesores en Supabase (supabase_asesores.sql).' : err.message });
+  }
+});
+
+app.post('/api/panel/asesores/unir', exigirClave, async (req, res) => {
+  try {
+    const { de, a } = req.body || {};
+    if (!de || !a || de === a) return res.status(400).json({ error: 'Elige el nombre a unir y el asesor destino.' });
+    const destino = (await db.listarAsesores()).find((x) => x.nombre === a);
+    if (!destino) return res.status(400).json({ error: 'El asesor destino no está registrado.' });
+    res.json({ ok: true, movidos: await db.renombrarAsesor(de, a) });
+  } catch (err) {
+    console.error('Error panel/asesores/unir:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Eliminar registros mal subidos. Solo desde el panel (con la clave).
 app.post('/api/panel/eliminar', exigirClave, async (req, res) => {
   try {
@@ -1382,13 +1518,22 @@ function hidratar(estado) {
 
 app.post('/api/chat', async (req, res) => {
   try {
-    const { sessionId, asesor, message, estado } = req.body || {};
+    const { sessionId, message, estado, cedula } = req.body || {};
+    let { asesor } = req.body || {};
     if (!sessionId || !message) return res.status(400).json({ error: 'Falta sessionId o message' });
+    // Con cédula, el nombre siempre sale de la tabla de asesores (así nunca queda escrito distinto).
+    if (cedula) {
+      const fila = await resolverAsesor(cedula);
+      if (!fila || !fila.activo) {
+        return res.json({ reply: AVISO_CEDULA[fila ? 'inactivo' : 'no_existe'], error: true, estado: estado || null, sinAcceso: true });
+      }
+      asesor = fila.nombre;
+    }
     const sesion = hidratar(estado) || sesiones.get(sessionId) || nuevaSesion();
     const respuesta = await manejar(sesion, asesor, message);
     sesiones.set(sessionId, sesion);
     if (sesiones.size > 2000) sesiones.delete(sesiones.keys().next().value);
-    res.json({ ...respuesta, estado: serializar(sesion) });
+    res.json({ ...respuesta, estado: serializar(sesion), asesor: asesor || undefined });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'Error interno' });

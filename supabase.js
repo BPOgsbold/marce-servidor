@@ -399,6 +399,52 @@ async function alertasCobertura(asesor) {
   return data || [];
 }
 
+// ---------------------------------------------------------------------------
+// Asesores (cada uno entra con su cédula)
+// ---------------------------------------------------------------------------
+async function buscarAsesor(cedula) {
+  const { data, error } = await getClient().from('asesores').select('*').eq('cedula', String(cedula)).maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+async function listarAsesores() {
+  const { data, error } = await getClient().from('asesores').select('*').order('nombre', { ascending: true }).limit(2000);
+  if (error) throw error;
+  return data || [];
+}
+async function guardarAsesor({ cedula, nombre, campana, activo }) {
+  const fila = { cedula: String(cedula), nombre, campana: campana || null, actualizado: new Date().toISOString() };
+  if (activo !== undefined) fila.activo = Boolean(activo);
+  const { data, error } = await getClient().from('asesores').upsert(fila).select().single();
+  if (error) throw error;
+  return data;
+}
+/** Pasa todos los registros de un nombre de asesor a otro (unir nombres repetidos o renombrar). */
+async function renombrarAsesor(de, a) {
+  const supabase = getClient();
+  const r1 = await supabase.from('interesados').update({ asesor: a }).eq('asesor', de).select('id');
+  if (r1.error) throw r1.error;
+  const r2 = await supabase.from('ventas').update({ asesor: a }).eq('asesor', de).select('id');
+  if (r2.error) throw r2.error;
+  return { interesados: (r1.data || []).length, ventas: (r2.data || []).length };
+}
+/** Cuántos interesados y ventas tiene cada nombre de asesor (de todos los tiempos). */
+async function conteoPorAsesor() {
+  const supabase = getClient();
+  const contar = async (tabla) => {
+    const cuenta = {};
+    for (let desde = 0; desde < 100000; desde += 1000) {
+      const { data, error } = await supabase.from(tabla).select('asesor').range(desde, desde + 999);
+      if (error) throw error;
+      for (const f of data || []) cuenta[f.asesor || ''] = (cuenta[f.asesor || ''] || 0) + 1;
+      if (!data || data.length < 1000) break;
+    }
+    return cuenta;
+  };
+  const [interesados, ventas] = await Promise.all([contar('interesados'), contar('ventas')]);
+  return { interesados, ventas };
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -430,4 +476,9 @@ module.exports = {
   eliminarVenta,
   eliminarInteresado,
   alertasCobertura,
+  buscarAsesor,
+  listarAsesores,
+  guardarAsesor,
+  renombrarAsesor,
+  conteoPorAsesor,
 };
