@@ -344,6 +344,14 @@ function preguntar(campo, cap) {
   };
   const ops = campo.opciones || campo.opcionesSugeridas;
   if (ops) resp.opciones = [...ops];
+  // Al preguntar la cobertura, se muestra la dirección en Google Maps para que el asesor la confirme.
+  const dir = cap.datos.direccion || cap.datos._direccion;
+  if (campo.id === 'cobertura' && dir) {
+    const ciudad = cap.datos.ciudad || cap.datos._ciudad || '';
+    const texto = [dir, ciudad].filter(Boolean).join(', ');
+    resp.reply = `📍 Esta es la dirección en Google Maps:\n**${texto}**\n¿La validaste bien?\n\n${campo.prompt}`;
+    resp.enlace = { texto: '🗺 Ver dirección en Google Maps', url: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(texto + ', Colombia') };
+  }
   if (campo.entrada) {
     resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
     if (campo.tipo === 'fecha_pasada') Object.assign(resp.entrada, { min: sumarDias(hoyCO(), -DIAS_ATRAS), max: hoyCO() });
@@ -722,7 +730,7 @@ function arrancarAccion(sesion, accion) {
     }
     return iniciarCaptura(sesion, 'no_venta');
   }
-  if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura');
+  if (accion === 'cobertura') return iniciarCaptura(sesion, 'cobertura', { _direccion: c.direccion || '', _ciudad: c.ciudad || '' });
   if (accion === 'escalar') return iniciarCaptura(sesion, 'escalamiento');
   if (accion === 'editar') return pedirQueEditar(sesion);
   if (accion === 'ot_activa') {
