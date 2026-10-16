@@ -1465,6 +1465,84 @@ app.post('/api/panel/asesores/unir', exigirClave, async (req, res) => {
   }
 });
 
+// ---------- Registro manual y edición desde el panel ----------
+const CAMPOS_INT_PANEL = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad', 'cobertura_validada', 'resultado', 'motivo_no_interes', 'observaciones'];
+const CAMPOS_VEN_PANEL = ['cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+const COMPARTIDOS = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad'];
+const RESULTADOS = ['en_gestion', 'venta', 'no_venta', 'volver_llamar', 'escalado', 'ot_activa'];
+const limpiarCampos = (obj, permitidos) => {
+  const out = {};
+  for (const k of permitidos) if (obj && k in obj) out[k] = obj[k] === '' ? null : String(obj[k]).trim();
+  return out;
+};
+function validarPanel(i) {
+  if ('telefono' in i && i.telefono) {
+    i.telefono = soloDigitos(i.telefono);
+    if (!/^3\d{9}$/.test(i.telefono)) return 'El celular debe tener 10 dígitos y empezar en 3.';
+  }
+  if ('resultado' in i && i.resultado && !RESULTADOS.includes(i.resultado)) return 'Estado no válido.';
+  if ('cobertura_validada' in i && i.cobertura_validada) i.cobertura_validada = norm(i.cobertura_validada) === 'si' ? 'sí' : 'no';
+  return null;
+}
+async function crearVentaPanel(asesor, cliente, venta, fecha) {
+  const datos = { ...limpiarCampos(venta, CAMPOS_VEN_PANEL), ciudad: cliente.ciudad, fecha_venta: fecha || hoyCO() };
+  return db.guardarVenta(asesor, cliente, datos);
+}
+
+// Crea a mano un cliente (y su venta) con la fecha que se elija. Sirve para no perder lo que no se registró en Marce.
+app.post('/api/panel/registro', exigirClave, async (req, res) => {
+  try {
+    const { interesado = {}, venta = null, fecha, auditor } = req.body || {};
+    const i = limpiarCampos(interesado, CAMPOS_INT_PANEL);
+    const err = validarPanel(i);
+    if (err) return res.status(400).json({ error: err });
+    if (!i.asesor || !i.nombre_cliente || !i.telefono || !i.direccion) return res.status(400).json({ error: 'Faltan datos: asesor, cliente, celular y dirección.' });
+    const hoy = hoyCO();
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(fecha || '') ? fecha : hoy;
+    if (dia > hoy) return res.status(400).json({ error: 'La fecha no puede ser futura.' });
+    const creado = await db.crearInteresado(i.asesor, {
+      direccion: i.direccion, nombre_cliente: i.nombre_cliente, telefono: i.telefono, ciudad: i.ciudad || null,
+      cobertura: i.cobertura_validada || 'sí', registro_manual: auditor || 'panel',
+    });
+    const extra = { resultado: i.resultado || 'en_gestion', motivo_no_interes: i.motivo_no_interes || null, observaciones: i.observaciones || null };
+    if (dia < hoy) extra.created_at = new Date(`${dia}T12:00:00-05:00`).toISOString();
+    let cliente = await db.actualizarInteresado(creado.id, extra);
+    if (extra.resultado === 'venta') await crearVentaPanel(i.asesor, cliente, venta || {}, dia);
+    res.json({ ok: true, interesado: cliente });
+  } catch (err) {
+    console.error('Error panel/registro:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Edita un cliente y/o su venta desde el panel.
+app.post('/api/panel/editar', exigirClave, async (req, res) => {
+  try {
+    const { interesado_id, venta_id, interesado = {}, venta = null } = req.body || {};
+    if (!interesado_id && !venta_id) return res.status(400).json({ error: 'Falta el registro a editar.' });
+    const i = limpiarCampos(interesado, CAMPOS_INT_PANEL);
+    const err = validarPanel(i);
+    if (err) return res.status(400).json({ error: err });
+    let cliente = null;
+    if (interesado_id && Object.keys(i).length) {
+      cliente = await db.actualizarInteresado(interesado_id, i);
+      await db.actualizarVentasDeInteresado(interesado_id, limpiarCampos(i, COMPARTIDOS));
+    }
+    if (venta && venta_id) {
+      const v = limpiarCampos(venta, CAMPOS_VEN_PANEL);
+      if (!interesado_id) Object.assign(v, limpiarCampos(i, COMPARTIDOS));
+      if (Object.keys(v).length) await db.actualizarVenta(venta_id, v);
+    } else if (venta && interesado_id && i.resultado === 'venta') {
+      cliente = cliente || (await db.obtenerCliente(interesado_id));
+      if (!cliente.venta) await crearVentaPanel(cliente.asesor, cliente, venta, null);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error panel/editar:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Eliminar registros mal subidos. Solo desde el panel (con la clave).
 app.post('/api/panel/eliminar', exigirClave, async (req, res) => {
   try {

@@ -445,6 +445,13 @@ async function conteoPorAsesor() {
   return { interesados, ventas };
 }
 
+/** Copia cambios (nombre, teléfono, dirección, asesor…) a las ventas de un interesado. */
+async function actualizarVentasDeInteresado(interesadoId, cambios) {
+  if (!Object.keys(cambios).length) return;
+  const { error } = await getClient().from('ventas').update(cambios).eq('interesado_id', interesadoId);
+  if (error) throw error;
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -481,4 +488,5 @@ module.exports = {
   guardarAsesor,
   renombrarAsesor,
   conteoPorAsesor,
+  actualizarVentasDeInteresado,
 };
