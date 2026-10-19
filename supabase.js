@@ -36,6 +36,7 @@ function inicioDeHoy() {
 // Inicio de un periodo en hora Colombia: 'hoy' | 'semana' (últimos 7 días) | 'mes' (desde el 1 del mes)
 function inicioDe(periodo) {
   const ahora = new Date(Date.now() - 5 * 3600 * 1000);
+  if (periodo === 'todo') return '2000-01-01T00:00:00-05:00';
   if (periodo === 'mes') return `${ahora.toISOString().slice(0, 8)}01T00:00:00-05:00`;
   if (periodo === 'semana') {
     const d = new Date(ahora.getTime() - 6 * 86400000);
@@ -174,7 +175,7 @@ async function buscarPorTelefono(telefono) {
 /** Clientes registrados hoy por el asesor (los más recientes primero). */
 async function clientesDeHoy(asesor, periodo = 'semana') {
   const supabase = getClient();
-  let q = supabase.from('interesados').select('*').gte('created_at', inicioDe(periodo)).order('created_at', { ascending: false }).limit(60);
+  let q = supabase.from('interesados').select('*').gte('created_at', inicioDe(periodo)).order('created_at', { ascending: false }).limit(periodo === 'hoy' ? 60 : 150);
   if (asesor) q = q.eq('asesor', asesor);
   const { data, error } = await q;
   if (error) throw error;
@@ -452,6 +453,26 @@ async function actualizarVentasDeInteresado(interesadoId, cambios) {
   if (error) throw error;
 }
 
+/** Todas las direcciones guardadas (interesados y ventas), para homologarlas. */
+async function todasLasDirecciones() {
+  const supabase = getClient();
+  const out = [];
+  for (const tabla of ['interesados', 'ventas']) {
+    for (let desde = 0; desde < 100000; desde += 1000) {
+      const { data, error } = await supabase.from(tabla).select('id, direccion').range(desde, desde + 999);
+      if (error) throw error;
+      for (const f of data || []) out.push({ tabla, id: f.id, direccion: f.direccion });
+      if (!data || data.length < 1000) break;
+    }
+  }
+  return out;
+}
+/** Cambia solo la dirección (sin tocar updated_at, para no alterar las alertas). */
+async function actualizarDireccion(tabla, id, direccion) {
+  const { error } = await getClient().from(tabla).update({ direccion }).eq('id', id);
+  if (error) throw error;
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -489,4 +510,6 @@ module.exports = {
   renombrarAsesor,
   conteoPorAsesor,
   actualizarVentasDeInteresado,
+  todasLasDirecciones,
+  actualizarDireccion,
 };

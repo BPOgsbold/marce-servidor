@@ -3,9 +3,9 @@
     {
       "id": "direccion",
       "label": "Dirección",
-      "prompt": "¿Cuál es la dirección del cliente?",
-      "regex": "^.{5,}$",
-      "errorMessage": "Escribe la dirección completa (mínimo 5 caracteres)."
+      "prompt": "¿Cuál es la dirección del cliente? Escríbela como te la diga (ej. Calle 6C # 82A-25 Torre 1 Apto 1103) y yo la dejo homologada 📍",
+      "errorMessage": "Escribe la dirección completa con tipo de vía y números.",
+      "tipo": "direccion"
     },
     {
       "id": "ciudad",

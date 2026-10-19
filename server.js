@@ -103,7 +103,7 @@ const MENU = [OP.NUEVO, OP.BUSCAR, OP.HOY, OP.RELLAMADAS, OP.RESUMEN];
 const INTENCIONES = [
   ['cancelar', /^(cancelar|cancela|salir|olvidalo|reiniciar|empezar de nuevo)$/],
   ['menu', /^(nuevo|nueva|menu|opciones|ayuda|inicio|hola+|holi+|oli+|ola+|hey|buenas|buen dia|buenos dias|buenas tardes|buenas noches|que mas|que hubo|quiubo|saludos|que puedes hacer|que haces|\+ ?nuevo)[\s.!?,]*(marce)?[.!?]*$/],
-  ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
+  ['hoy', /clientes\s+de\s+hoy|mis\s+clientes|mi\s+historial|^historial|mis\s+interesados|interesados\s+de\s+hoy|los\s+de\s+hoy|registrados\s+hoy|lista\s+de\s+(hoy|clientes)/],
   ['resumen_mes', /resumen\s+del\s+mes|como\s+voy\s+(en\s+)?(el|este)\s+mes|numeros\s+del\s+mes|en\s+el\s+mes/],
   ['resumen_equipo', /resumen\s+(del|de\s+todo\s+el)\s+equipo|como\s+va\s+el\s+equipo|numeros\s+del\s+equipo/],
   ['alertas', /alerta|recuperable|confirmo\s+cobertura|si\s+tenia\s+cobertura/],
@@ -384,7 +384,8 @@ function preguntar(campo, cap) {
     const ciudad = cap.datos.ciudad || cap.datos._ciudad || '';
     const texto = [dir, ciudad].filter(Boolean).join(', ');
     resp.reply = `📍 Esta es la dirección en Google Maps:\n**${texto}**\n¿La validaste bien?\n\n${campo.prompt}`;
-    resp.enlace = { texto: '🗺 Ver dirección en Google Maps', url: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(texto + ', Colombia') };
+    const paraMapa = [cap.datos.direccion_original || dir, ciudad].filter(Boolean).join(', ');
+    resp.enlace = { texto: '🗺 Ver dirección en Google Maps', url: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(paraMapa + ', Colombia') };
   }
   if (campo.entrada) {
     resp.entrada = { tipo: campo.entrada, formato: campo.formato || 'iso' };
@@ -498,8 +499,160 @@ function validarMunicipio(crudo) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Direcciones homologadas (nomenclatura IGAC / Agustín Codazzi)
+// Ej.: "calle 6c # 82a-25 torre 1 apto 1103" → "CL 6C # 82A - 25 TO 1 AP 1103"
+// ---------------------------------------------------------------------------
+const VIAS = [
+  [/^(AVENIDA|AV|AVE|AVDA)\s*(CALLE|CL|CLL)$/, 'AC'],
+  [/^(AVENIDA|AV|AVE|AVDA)\s*(CARRERA|KR|CR|CRA|KRA)$/, 'AK'],
+  [/^(CALLE|CALL|CALLLE|CLL|CLLE|CL|CAL|CLE)$/, 'CL'],
+  [/^(CARRERA|CARERA|CARRRERA|CRA|CRR|CARR|CR|KRA|KR|KRR|CRRA|CAR)$/, 'KR'],
+  [/^(AVENIDA|AV|AVE|AVDA|AVN)$/, 'AV'],
+  [/^(DIAGONAL|DIAG|DG|DGNAL|DIAGNAL)$/, 'DG'],
+  [/^(TRANSVERSAL|TRANSV|TRANSVER|TRV|TR|TV|TRASVERSAL|TRANVERSAL)$/, 'TV'],
+  [/^(CIRCULAR|CIR|CIRC)$/, 'CIR'],
+  [/^(CIRCUNVALAR|CRV|CIRCUNV)$/, 'CRV'],
+  [/^(AUTOPISTA|AUTOP|AU)$/, 'AU'],
+  [/^(CARRETERA|CARRET|CT)$/, 'CT'],
+  [/^(VEREDA|VDA|VRDA)$/, 'VDA'],
+  [/^(KILOMETRO|KM)$/, 'KM'],
+];
+const COMPLEMENTOS = [
+  [/^(APARTAMENTO|APARTAMENT|APTO|APT|AP|APART|APTOS|DPTO|DEPARTAMENTO)$/, 'AP'],
+  [/^(TORRE|TORR|TOR|TO|T)$/, 'TO'],
+  [/^(BLOQUE|BLQ|BL|BLOQ)$/, 'BL'],
+  [/^(CASA|CS|CA)$/, 'CA'],
+  [/^(INTERIOR|INT|IN)$/, 'IN'],
+  [/^(PISO|PI|P)$/, 'PI'],
+  [/^(LOCAL|LC|LOC)$/, 'LC'],
+  [/^(OFICINA|OFI|OF)$/, 'OF'],
+  [/^(MANZANA|MZ|MZA|MANZ)$/, 'MZ'],
+  [/^(LOTE|LT|LTE)$/, 'LT'],
+  [/^(ETAPA|ET)$/, 'ET'],
+  [/^(CONJUNTO|CONJ|CJ|CONJUNTOS)$/, 'CONJ'],
+  [/^(EDIFICIO|EDIF|ED)$/, 'ED'],
+  [/^(URBANIZACION|URB|UR)$/, 'UR'],
+  [/^(BARRIO|BRR|BR|BARR)$/, 'BR'],
+  [/^(SECTOR|SEC|SC)$/, 'SC'],
+  [/^(UNIDAD|UND|UN)$/, 'UN'],
+  [/^(PORTERIA|PT)$/, 'PT'],
+  [/^(SOTANO|SS)$/, 'SS'],
+  [/^(FINCA|FCA)$/, 'FCA'],
+];
+const CARDINAL = { SUR: 'SUR', ESTE: 'ESTE', NORTE: 'NORTE', OESTE: 'OESTE', OCC: 'OESTE', OCCIDENTE: 'OESTE' };
+const mapear = (lista, w) => { for (const [re, v] of lista) if (re.test(w)) return v; return null; };
+
+function homologarDireccion(texto) {
+  const original = String(texto || '').trim();
+  let t = original
+    .toUpperCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/N[°º]\s*|\bNO\.\s*|\bNUMERO\b|\bNRO\.?\b/g, ' # ')
+    .replace(/[,;:()]/g, ' ')
+    .replace(/[#]/g, ' # ')
+    .replace(/[-–]/g, ' - ')
+    .replace(/\./g, ' ')
+    // separar números pegados a letras: 58ASUR → 58 A SUR ; TORRE2 → TORRE 2 ; AP1103 → AP 1103
+    .replace(/([A-Z]{2,})(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Z]+)/g, (m, d, l) => {
+      if (l === 'BIS') return `${d} BIS`;
+      const m2 = l.match(/^([A-Z]?)(BIS)?([A-Z]?)(SUR|ESTE|NORTE|OESTE)?$/);
+      return m2 ? `${d} ${[m2[1], m2[2], m2[3], m2[4]].filter(Boolean).join(' ')}` : `${d} ${l}`;
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+  let w = t.split(' ').filter(Boolean);
+  // Tipo de vía (también "AVENIDA CALLE")
+  let via = null;
+  if (w.length >= 2) { via = mapear(VIAS, w[0] + ' ' + w[1]) ? mapear(VIAS, w[0] + ' ' + w[1]) : null; if (via && /^(AC|AK)$/.test(via)) w = w.slice(2); else via = null; }
+  if (!via && w.length) { via = mapear(VIAS, w[0]); if (via) w = w.slice(1); }
+  if (!via) return { ok: false, original };
+  if (via === 'VDA' || via === 'KM' || via === 'CT' || via === 'AU') {
+    return { ok: true, valor: [via, ...w.filter((x) => x !== '#' && x !== '-')].join(' '), original };
+  }
+  // Separar complementos (torre, apto...) que pueden venir en cualquier parte
+  const principal = [];
+  const comp = [];
+  for (let i = 0; i < w.length; i++) {
+    const c = mapear(COMPLEMENTOS, w[i]);
+    // "T" o "P" sueltas solo cuentan como complemento si van seguidas de un número
+    if (c && !((w[i] === 'T' || w[i] === 'P' || w[i] === 'CA' || w[i] === 'IN') && !/^\d/.test(w[i + 1] || ''))) {
+      const partes = [c];
+      if (['CONJ', 'ED', 'UR', 'BR', 'SC', 'FCA', 'UN'].includes(c)) {
+        // Complementos con nombre: "CONJ LOS PINOS", "ED TORRES DEL PARQUE"
+        while (i + 1 < w.length && !mapear(COMPLEMENTOS, w[i + 1]) && !/^[#-]$/.test(w[i + 1]) && !/^\d/.test(w[i + 1])) partes.push(w[++i]);
+        comp.push(partes.join(' '));
+        continue;
+      }
+      while (i + 1 < w.length && w[i + 1] !== '#' && !mapear(COMPLEMENTOS, w[i + 1]) && (/^\d/.test(w[i + 1]) || /^[A-Z]$/.test(w[i + 1]) || partes.length === 1)) {
+        partes.push(w[++i]);
+        if (/^\d/.test(partes[partes.length - 1]) && !/^[A-Z]$/.test(w[i + 1] || '')) break;
+      }
+      comp.push(partes.join(' '));
+    } else principal.push(w[i]);
+  }
+  // Grupos numéricos: vía (6C BIS SUR) # cruce (82A) - placa (25)
+  const grupos = [];
+  let cardinales = [];
+  let actual = null;
+  const sobrantes = [];
+  // Nombre de la vía (ej. "AV BOYACA 16B - 53"): palabras antes del primer número.
+  const nombreVia = [];
+  while (principal.length && !/^\d/.test(principal[0]) && principal[0] !== '#' && principal[0] !== '-' && !CARDINAL[principal[0]] && !mapear(VIAS, principal[0])) nombreVia.push(principal.shift());
+  for (const x of principal) {
+    if (mapear(VIAS, x)) { if (actual) { grupos.push(actual); actual = null; } continue; } // "CL 20 CR 77-80": la segunda vía es el cruce
+    if (x === '#' || x === '-' || x === 'CON') { if (actual) { grupos.push(actual); actual = null; } continue; }
+    if (CARDINAL[x]) { cardinales.push(CARDINAL[x]); continue; }
+    if (/^\d+$/.test(x)) { if (actual) grupos.push(actual); actual = x; continue; }
+    if (actual && (/^[A-Z]$/.test(x) || x === 'BIS')) { actual += (x === 'BIS' ? ' BIS' : (/BIS$/.test(actual) ? ' ' + x : x)); continue; }
+    if (actual) { grupos.push(actual); actual = null; }
+    sobrantes.push(x);
+  }
+  if (actual) grupos.push(actual);
+  let valor, g3, resto;
+  if (nombreVia.length) {
+    if (grupos.length < 2) return { ok: false, original };
+    let g2;
+    [g2, g3, ...resto] = grupos;
+    valor = `${via} ${nombreVia.join(' ')} # ${g2} - ${g3}`;
+  } else {
+    if (grupos.length < 2) return { ok: false, original };
+    let g1, g2;
+    [g1, g2, g3, ...resto] = grupos;
+    valor = `${via} ${g1} # ${g2}`;
+    if (g3) valor += ` - ${g3}`;
+  }
+  if (cardinales.length) valor += ' ' + [...new Set(cardinales)].join(' ');
+  if (resto.length) valor += ' ' + resto.join(' ');
+  // Orden de complementos de lo general a lo particular (conjunto → torre → apartamento)
+  const ORDEN = ['UR', 'BR', 'SC', 'CONJ', 'UN', 'ED', 'MZ', 'LT', 'ET', 'BL', 'TO', 'IN', 'CA', 'PI', 'AP', 'LC', 'OF', 'PT', 'SS', 'FCA'];
+  comp.sort((a, b) => ORDEN.indexOf(a.split(' ')[0]) - ORDEN.indexOf(b.split(' ')[0]));
+  if (comp.length) valor += ' ' + comp.join(' ');
+  if (sobrantes.length) valor += ' ' + sobrantes.join(' ');
+  return { ok: Boolean(g3), parcial: !g3, valor: valor.replace(/\s+/g, ' ').trim(), original };
+}
+
+// El asesor escribe la dirección como sea; Marce la deja homologada.
+function validarDireccion(crudo) {
+  const texto = String(crudo || '').trim();
+  if (texto.startsWith(DEJAR)) {
+    const v = texto.slice(DEJAR.length).replace(/^"|"$/g, '').trim();
+    return v.length >= 5 ? { ok: true, valor: v.toUpperCase(), extra: { direccion_original: v, direccion_sin_homologar: true } } : { ok: false };
+  }
+  if (texto.length < 5) return { ok: false };
+  const r = homologarDireccion(texto);
+  if (r.ok) return { ok: true, valor: r.valor, extra: { direccion_original: texto }, homologada: r.valor };
+  return {
+    ok: false,
+    mensaje: `No pude homologar "${texto}". Escríbela con el tipo de vía y los números, por ejemplo: **Calle 6C # 82A-25 Torre 1 Apto 1103**. Si es rural o especial, déjala así.`,
+    sugerencias: [`${DEJAR}${texto}`],
+  };
+}
+
 function validar(campo, crudo) {
   if (campo.tipo === 'municipio') return validarMunicipio(crudo);
+  if (campo.tipo === 'direccion') return validarDireccion(crudo);
   if (campo.tipo === 'fecha_futura') return validarFechaFutura(crudo);
   if (campo.tipo === 'fecha_pasada') return validarFechaPasada(crudo);
   let v = String(crudo || '').trim();
@@ -547,8 +700,9 @@ async function responderCaptura(sesion, asesor, texto) {
   }
 
   while (cap.paso < cap.campos.length && cap.campos[cap.paso].id in cap.datos) cap.paso += 1;
-  if (cap.paso < cap.campos.length) return preguntar(cap.campos[cap.paso], cap);
-  return finalizarCaptura(sesion, asesor);
+  const siguiente = cap.paso < cap.campos.length ? preguntar(cap.campos[cap.paso], cap) : await finalizarCaptura(sesion, asesor);
+  if (r.homologada && siguiente?.reply) siguiente.reply = `📍 Dirección homologada: **${r.homologada}**\n\n${siguiente.reply}`;
+  return siguiente;
 }
 
 async function finalizarCaptura(sesion, asesor) {
@@ -788,29 +942,39 @@ function arrancarAccion(sesion, accion) {
 // ---------------------------------------------------------------------------
 // Mis clientes de hoy (para elegir sin tener el teléfono)
 // ---------------------------------------------------------------------------
-async function clientesDeHoy(sesion, asesor) {
+// Mis clientes: por periodo (hoy, últimos 7 días, este mes o todo el historial).
+const PERIODOS_CLIENTES = {
+  hoy: { texto: 'de hoy', chip: '📅 Hoy' },
+  semana: { texto: 'de los últimos 7 días', chip: '🗓 Últimos 7 días' },
+  mes: { texto: 'de este mes', chip: '📆 Este mes' },
+  todo: { texto: 'de todo tu historial', chip: '🗂 Todo mi historial' },
+};
+const chipsPeriodo = (actual) => Object.entries(PERIODOS_CLIENTES).filter(([k]) => k !== actual).map(([k, v]) => `Mis clientes · ${v.chip}`);
+async function clientesDeHoy(sesion, asesor, periodo = 'mes') {
+  const p = PERIODOS_CLIENTES[periodo] ? periodo : 'mes';
   let lista;
   try {
-    lista = await db.clientesDeHoy(asesor);
+    lista = await db.clientesDeHoy(asesor, p);
   } catch (e) {
-    console.error('Error listando clientes de hoy:', e);
+    console.error('Error listando clientes:', e);
     return { reply: `No pude traer la lista (${e.message}).`, error: true };
   }
   if (!lista.length) {
     sesion.modo = 'libre';
-    return { reply: 'No has registrado clientes en los últimos 7 días. Si buscas uno más antiguo, usa "Buscar cliente".', opciones: [OP.NUEVO, OP.BUSCAR] };
+    return { reply: `No tienes clientes ${PERIODOS_CLIENTES[p].texto}.`, opciones: [...chipsPeriodo(p), OP.BUSCAR] };
   }
   sesion.modo = 'seleccion';
   sesion.resultados = lista;
+  const tope = lista.length >= 150 ? ' (los 150 más recientes; para uno más antiguo usa "Buscar cliente")' : '';
   return {
-    reply: `Tus ${lista.length} cliente(s) de los últimos 7 días, del más reciente al más antiguo. Toca el que necesitas 👇 (o escribe parte del nombre). Para uno más antiguo usa "Buscar cliente".`,
+    reply: `Tus ${lista.length} cliente(s) ${PERIODOS_CLIENTES[p].texto}${tope}, del más reciente al más antiguo. Toca el que necesitas 👇 (o escribe parte del nombre).`,
     tarjetas: lista.map((c, i) => ({
       ...tarjetaDe(c),
       compacta: true,
       horaCorta: new Date(c.created_at).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }),
       elegir: `${i + 1}. ${c.nombre_cliente || 'Sin nombre'}`,
     })),
-    opciones: [OP.CANCELAR],
+    opciones: [...chipsPeriodo(p), OP.CANCELAR],
   };
 }
 
@@ -1157,7 +1321,10 @@ async function manejar(sesion, asesor, texto) {
     const saludo = /^(hola|holi|oli|ola|hey|buen|que mas|que hubo|quiubo|saludos)/.test(n);
     return { reply: saludo ? `¡Hola${nombre ? `, ${nombre}` : ''}! 👋 ¿Qué quieres hacer?` : '¿Qué quieres hacer? 👇', opciones: MENU };
   }
-  if (intencion === 'hoy') return clientesDeHoy(sesion, asesor);
+  if (intencion === 'hoy') {
+    const periodo = /\bhoy\b/.test(n) ? 'hoy' : /semana|7\s*dias/.test(n) ? 'semana' : /todo|historial/.test(n) ? 'todo' : 'mes';
+    return clientesDeHoy(sesion, asesor, periodo);
+  }
   if (intencion === 'nuevo') {
     sesion.cliente = null;
     return { ...iniciarCaptura(sesion, 'interesado'), reply: '¡Bien! 🙌 Registremos al interesado. ' + CAMPOS().interesado[0].prompt };
@@ -1476,6 +1643,10 @@ const limpiarCampos = (obj, permitidos) => {
   return out;
 };
 function validarPanel(i) {
+  if (i.direccion) {
+    const h = homologarDireccion(i.direccion);
+    if (h.ok) i.direccion = h.valor;
+  }
   if ('telefono' in i && i.telefono) {
     i.telefono = soloDigitos(i.telefono);
     if (!/^3\d{9}$/.test(i.telefono)) return 'El celular debe tener 10 dígitos y empezar en 3.';
@@ -1488,6 +1659,27 @@ async function crearVentaPanel(asesor, cliente, venta, fecha) {
   const datos = { ...limpiarCampos(venta, CAMPOS_VEN_PANEL), ciudad: cliente.ciudad, fecha_venta: fecha || hoyCO() };
   return db.guardarVenta(asesor, cliente, datos);
 }
+
+// Homologa las direcciones que ya estaban guardadas. Primero muestra cuántas cambian; con aplicar=true las corrige.
+app.post('/api/panel/homologar-direcciones', exigirClave, async (req, res) => {
+  try {
+    const aplicar = Boolean(req.body?.aplicar);
+    const filas = await db.todasLasDirecciones();
+    const cambios = [];
+    let sinHomologar = 0;
+    for (const f of filas) {
+      if (!f.direccion) continue;
+      const h = homologarDireccion(f.direccion);
+      if (!h.ok) { sinHomologar += 1; continue; }
+      if (h.valor !== f.direccion) cambios.push({ ...f, nueva: h.valor });
+    }
+    if (aplicar) for (const c of cambios) await db.actualizarDireccion(c.tabla, c.id, c.nueva, c.direccion);
+    res.json({ ok: true, aplicado: aplicar, cambian: cambios.length, sinHomologar, ejemplos: cambios.slice(0, 8).map((c) => ({ antes: c.direccion, despues: c.nueva })) });
+  } catch (err) {
+    console.error('Error homologar-direcciones:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Crea a mano un cliente (y su venta) con la fecha que se elija. Sirve para no perder lo que no se registró en Marce.
 app.post('/api/panel/registro', exigirClave, async (req, res) => {
