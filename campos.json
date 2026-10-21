@@ -98,6 +98,16 @@
       "errorMessage": "Describe el plan o paquete vendido."
     },
     {
+      "id": "servicios_vendidos",
+      "label": "Servicios vendidos",
+      "prompt": "¿Cuántos servicios vendió?",
+      "opciones": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    {
       "id": "numero_ot",
       "label": "Número de OT",
       "prompt": "¿Cuál quedó el número de OT (orden de trabajo)?",
@@ -139,6 +149,26 @@
         "Ninguna"
       ],
       "errorMessage": "Escribe una observación o \"Ninguna\"."
+    },
+    {
+      "id": "multiasistencia",
+      "label": "¿Vendió multiasistencia?",
+      "prompt": "Última pregunta 🙌 ¿Vendió multiasistencias?",
+      "opciones": [
+        "Sí",
+        "No"
+      ]
+    },
+    {
+      "id": "multiasistencia_cual",
+      "label": "Multiasistencia",
+      "prompt": "¿Cuál multiasistencia vendió?",
+      "regex": "^.{2,}$",
+      "errorMessage": "Escribe cuál multiasistencia vendió.",
+      "siCampo": {
+        "id": "multiasistencia",
+        "valor": "Sí"
+      }
     }
   ],
   "no_venta": [],

@@ -26,6 +26,7 @@ const COLS_INTERESADO = {
 const COLS_VENTA = [
   'nombre_cliente', 'cedula', 'telefono', 'direccion', 'barrio', 'ciudad', 'plan',
   'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones', 'tipo_venta',
+  'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual',
 ];
 
 // Inicio del día de hoy en hora Colombia (UTC-5), en ISO.
@@ -90,9 +91,12 @@ async function guardarVenta(asesor, cliente, datos) {
     row.datos = { ...completo, registrada_el: new Date().toISOString() };
   }
   let { data, error } = await supabase.from('ventas').insert(row).select().single();
-  // Si todavía no existe la columna tipo_venta en Supabase, se guarda igual (queda en "datos").
-  if (error && /tipo_venta/.test(error.message || '')) {
-    delete row.tipo_venta;
+  // Si todavía falta alguna columna nueva en Supabase, se guarda igual (el dato queda en "datos").
+  for (let i = 0; error && i < 6; i++) {
+    const col = (error.message || '').match(/'([a-z_]+)' column|column "?([a-z_]+)"?/i);
+    const nombre = col && (col[1] || col[2]);
+    if (!nombre || !(nombre in row) || nombre === 'datos') break;
+    delete row[nombre];
     ({ data, error } = await supabase.from('ventas').insert(row).select().single());
   }
   if (error) throw error;

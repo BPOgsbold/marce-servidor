@@ -287,6 +287,10 @@ function tarjetaDe(c) {
       detalles.push(['📅 Fecha venta', new Date(v.created_at).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short' }) + ' (fecha anterior)']);
     }
     detalles.push(['Tipo de venta', v.tipo_venta || v.datos?.tipo_venta]);
+    const serv = v.servicios_vendidos || v.datos?.servicios_vendidos;
+    if (serv) detalles.push(['Servicios vendidos', String(serv)]);
+    const multi = v.multiasistencia || v.datos?.multiasistencia;
+    if (multi) detalles.push(['Multiasistencia', norm(multi) === 'si' ? `Sí · ${v.multiasistencia_cual || v.datos?.multiasistencia_cual || ''}` : 'No']);
     detalles.push(['Cédula', v.cedula], ['Plan', v.plan], ['OT', v.numero_ot], ['Cuenta', v.numero_cuenta]);
     detalles.push(['Agenda', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
     detalles.push(['Instalación', textoInstalacion(v)]);
@@ -340,7 +344,7 @@ function accionesPara(c) {
 // ---------------------------------------------------------------------------
 // Datos que se pueden corregir: los del interesado siempre, los de la venta si tiene venta.
 const EDITABLES_INTERESADO = ['nombre_cliente', 'telefono', 'direccion', 'ciudad'];
-const EDITABLES_VENTA = ['tipo_venta', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+const EDITABLES_VENTA = ['tipo_venta', 'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
 function campoEditable(id) {
   const todos = [...(CAMPOS().interesado || []), ...(CAMPOS().venta || [])];
   const def = todos.find((c) => c.id === id);
@@ -411,12 +415,21 @@ const conCliente = (sesion) => (sesion.cliente ? ` de ${sesion.cliente.nombre_cl
 // ---------------------------------------------------------------------------
 // Capturas (interesado, venta, no venta, cobertura)
 // ---------------------------------------------------------------------------
+// Salta los campos ya respondidos y los que dependen de otra respuesta (ej. "¿Cuál multiasistencia?" solo si dijo Sí).
+function avanzar(cap) {
+  while (cap.paso < cap.campos.length) {
+    const c = cap.campos[cap.paso];
+    if (c.id in cap.datos) { cap.paso += 1; continue; }
+    if (c.siCampo && norm(cap.datos[c.siCampo.id]) !== norm(c.siCampo.valor)) { cap.datos[c.id] = null; cap.paso += 1; continue; }
+    break;
+  }
+}
 function iniciarCaptura(sesion, tipo, datosPrevios = {}) {
   const campos = CAMPOS()[tipo];
   const cap = { tipo, campos, paso: 0, datos: { ...datosPrevios } };
   // Campos que solo aparecen si el back los activó en el panel (ej. fecha de venta anterior).
   for (const c of campos) if (c.soloSi && !activo(c.soloSi) && !(c.id in cap.datos)) cap.datos[c.id] = null;
-  while (cap.paso < campos.length && campos[cap.paso].id in cap.datos) cap.paso += 1;
+  avanzar(cap);
   sesion.modo = 'captura';
   sesion.captura = cap;
   return preguntar(campos[cap.paso], cap);
@@ -759,7 +772,7 @@ async function responderCaptura(sesion, asesor, texto) {
     }
   }
 
-  while (cap.paso < cap.campos.length && cap.campos[cap.paso].id in cap.datos) cap.paso += 1;
+  avanzar(cap);
   const siguiente = cap.paso < cap.campos.length ? preguntar(cap.campos[cap.paso], cap) : await finalizarCaptura(sesion, asesor);
   if (r.homologada && siguiente?.reply) siguiente.reply = `📍 Dirección homologada: **${r.homologada}**\n\n${siguiente.reply}`;
   return siguiente;
@@ -1348,7 +1361,7 @@ async function manejar(sesion, asesor, texto) {
     if (/^no/.test(n)) {
       sesion.modo = 'captura';
       const cap = sesion.captura;
-      while (cap.paso < cap.campos.length && cap.campos[cap.paso].id in cap.datos) cap.paso += 1;
+      avanzar(cap);
       if (cap.paso < cap.campos.length) return { ...preguntar(cap.campos[cap.paso], cap), reply: 'Ok, sigamos. ' + cap.campos[cap.paso].prompt };
       return finalizarCaptura(sesion, asesor);
     }
@@ -1540,7 +1553,7 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
     const hasta = isoColombia(req.query.hasta || hoy, true);
     if (!desde || !hasta) return res.status(400).json({ error: 'Fechas inválidas (usa AAAA-MM-DD).' });
     const d = await db.panelDatos(desde, hasta);
-    for (const k of Object.keys(d)) if (Array.isArray(d[k])) d[k] = d[k].map((f) => ({ ...conRegional(f), venta: f.venta ? conRegional(f.venta) : f.venta, tipo_venta: f.tipo_venta || f.datos?.tipo_venta || undefined }));
+    for (const k of Object.keys(d)) if (Array.isArray(d[k])) d[k] = d[k].map((f) => ({ ...conRegional(f), venta: f.venta ? conRegional(f.venta) : f.venta, tipo_venta: f.tipo_venta || f.datos?.tipo_venta || undefined, servicios_vendidos: f.servicios_vendidos || f.datos?.servicios_vendidos || undefined, multiasistencia: f.multiasistencia || f.datos?.multiasistencia || undefined, multiasistencia_cual: f.multiasistencia_cual || f.datos?.multiasistencia_cual || undefined }));
     res.json(d);
   } catch (err) {
     console.error('Error panel/datos:', err);
@@ -1553,7 +1566,7 @@ app.get('/api/panel/hoy', exigirClave, async (req, res) => {
   try {
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyCO();
     const [agenda, ventas] = await Promise.all([db.agendaDelDia(fecha), db.ventasDelDia(fecha)]);
-    const prep = (v) => ({ ...conRegional(v), tipo_venta: v.tipo_venta || v.datos?.tipo_venta || null });
+    const prep = (v) => ({ ...conRegional(v), tipo_venta: v.tipo_venta || v.datos?.tipo_venta || null, servicios_vendidos: v.servicios_vendidos || v.datos?.servicios_vendidos || null, multiasistencia: v.multiasistencia || v.datos?.multiasistencia || null, multiasistencia_cual: v.multiasistencia_cual || v.datos?.multiasistencia_cual || null });
     res.json({ fecha, agenda: agenda.map(prep), ventas: ventas.map(prep) });
   } catch (err) {
     console.error('Error panel/hoy:', err.message);
@@ -1599,7 +1612,7 @@ app.post('/api/panel/instalacion', exigirClave, async (req, res) => {
 // Gestión completa del BO sobre una venta: instalación (+motivo), aprobación (+motivo) y llamada en OCM.
 app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
   try {
-    const { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, torre_salida, torre_motivo, torre_fecha_reagenda, auditor } = req.body || {};
+    let { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, torre_salida, torre_motivo, torre_fecha_reagenda, auditor } = req.body || {};
     if (!id) return res.status(400).json({ error: 'Falta la venta.' });
     if (!['pendiente', 'instalada', 'no_instalada', 'cancelada'].includes(estado)) return res.status(400).json({ error: 'Estado de instalación no válido.' });
     if ((estado === 'no_instalada' || estado === 'cancelada') && !String(motivo || '').trim()) {
@@ -1616,9 +1629,21 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
       return res.status(400).json({ error: 'Torre de control: elige la fecha del nuevo reagendamiento.' });
     }
     const antes = await db.obtenerVenta(id);
+    // La torre y el estado de instalación son lo mismo: si cambia uno, se actualiza el otro.
+    const TORRE_A_ESTADO = { instalado: 'instalada', cancelado: 'cancelada', pendiente: 'pendiente', reagendado: 'pendiente', iniciado: 'pendiente', sin_iniciar_am: 'pendiente', sin_iniciar_pm: 'pendiente' };
+    const ESTADO_A_TORRE = { instalada: 'instalado', cancelada: 'cancelado' };
+    const torreCambio = (antes?.torre_salida || '') !== (torre_salida || '');
+    const estadoCambio = (antes?.estado_instalacion || 'pendiente') !== estado;
+    if (torreCambio && torre_salida && TORRE_A_ESTADO[torre_salida] && !estadoCambio) {
+      estado = TORRE_A_ESTADO[torre_salida];
+      if (estado === 'cancelada' && !String(motivo || '').trim()) motivo = tMotivo;
+    } else if (estadoCambio && !torreCambio && ESTADO_A_TORRE[estado]) {
+      torre_salida = ESTADO_A_TORRE[estado];
+      if (estado === 'cancelada' && !tMotivo) torre_motivo = String(motivo || '').trim();
+    }
     const cambios = {
       torre_salida: torre_salida || null,
-      torre_motivo: tMotivo || null,
+      torre_motivo: String(torre_motivo || '').trim() || null,
       torre_fecha_reagenda: torre_fecha_reagenda || null,
       estado_instalacion: estado,
       instalacion_nota: String(motivo || '').trim() || null,
@@ -1763,7 +1788,7 @@ app.post('/api/panel/asesores/unir', exigirClave, async (req, res) => {
 
 // ---------- Registro manual y edición desde el panel ----------
 const CAMPOS_INT_PANEL = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad', 'cobertura_validada', 'resultado', 'motivo_no_interes', 'observaciones'];
-const CAMPOS_VEN_PANEL = ['tipo_venta', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+const CAMPOS_VEN_PANEL = ['tipo_venta', 'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
 const COMPARTIDOS = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad'];
 const RESULTADOS = ['en_gestion', 'venta', 'no_venta', 'volver_llamar', 'escalado', 'ot_activa'];
 const limpiarCampos = (obj, permitidos) => {
