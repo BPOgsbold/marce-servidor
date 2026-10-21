@@ -509,6 +509,41 @@ async function ventasDelDia(fecha) {
   return data || [];
 }
 
+// ---------------------------------------------------------------------------
+// Usuarios del panel e historial de cambios
+// ---------------------------------------------------------------------------
+async function buscarUsuario(usuario) {
+  const { data, error } = await getClient().from('panel_usuarios').select('*').eq('usuario', usuario).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+async function listarUsuarios() {
+  const { data, error } = await getClient().from('panel_usuarios').select('usuario, nombre, perfil, activo, ultimo_ingreso, creado').order('nombre');
+  if (error) throw error;
+  return data || [];
+}
+async function guardarUsuario(fila) {
+  const { data, error } = await getClient().from('panel_usuarios').upsert({ ...fila, actualizado: new Date().toISOString() }).select('usuario, nombre, perfil, activo').single();
+  if (error) throw error;
+  return data;
+}
+async function marcarIngreso(usuario) {
+  await getClient().from('panel_usuarios').update({ ultimo_ingreso: new Date().toISOString() }).eq('usuario', usuario);
+}
+async function registrarHistorial(fila) {
+  const { error } = await getClient().from('panel_historial').insert(fila);
+  if (error) throw error;
+}
+async function leerHistorial({ desde, hasta, usuario }) {
+  let q = getClient().from('panel_historial').select('*').order('fecha', { ascending: false }).limit(3000);
+  if (desde) q = q.gte('fecha', desde);
+  if (hasta) q = q.lt('fecha', hasta);
+  if (usuario) q = q.eq('usuario', usuario);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -550,5 +585,11 @@ module.exports = {
   todasLasDirecciones,
   actualizarDireccion,
   agendaDelDia,
+  buscarUsuario,
+  listarUsuarios,
+  guardarUsuario,
+  marcarIngreso,
+  registrarHistorial,
+  leerHistorial,
   ventasDelDia,
 };

@@ -1529,13 +1529,6 @@ app.get('/api/mis-pendientes', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Panel web (back office). Protegido con la clave PANEL_CLAVE de Render.
 // ---------------------------------------------------------------------------
-function exigirClave(req, res, next) {
-  const clave = process.env.PANEL_CLAVE;
-  if (!clave) return res.status(503).json({ error: 'Falta configurar PANEL_CLAVE en Render (Environment).' });
-  if (req.get('x-panel-clave') !== clave) return res.status(401).json({ error: 'Clave incorrecta.' });
-  next();
-}
-
 // Fecha "AAAA-MM-DD" (hora Colombia) → ISO
 const isoColombia = (fecha, finDelDia) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) return null;
@@ -1544,7 +1537,178 @@ const isoColombia = (fecha, finDelDia) => {
   return d.toISOString();
 };
 
-app.get('/api/panel/login', exigirClave, (req, res) => res.json({ ok: true }));
+// ---------------------------------------------------------------------------
+// Acceso al panel: usuario + contraseña con PERFIL. Cada cambio queda en el historial.
+// La clave PANEL_CLAVE de Render sirve como usuario "admin" de respaldo.
+// ---------------------------------------------------------------------------
+const crypto = require('crypto');
+const PERFILES = {
+  admin: { nombre: 'Administrador', permisos: ['ver', 'gestion', 'torre', 'editar', 'eliminar', 'administrar', 'usuarios', 'historial'] },
+  supervisor: { nombre: 'Supervisor', permisos: ['ver', 'gestion', 'torre', 'editar', 'eliminar', 'administrar', 'historial'] },
+  backoffice: { nombre: 'Back office', permisos: ['ver', 'gestion', 'torre', 'editar'] },
+  torre: { nombre: 'Torre de control', permisos: ['ver', 'torre'] },
+  consulta: { nombre: 'Solo consulta', permisos: ['ver'] },
+};
+const SECRETO = () => process.env.PANEL_SECRETO || process.env.PANEL_CLAVE || 'marce';
+const b64 = (s) => Buffer.from(s).toString('base64url');
+function firmarToken(u) {
+  const cuerpo = b64(JSON.stringify({ u: u.usuario, n: u.nombre, p: u.perfil, exp: Date.now() + 14 * 3600 * 1000 }));
+  return cuerpo + '.' + crypto.createHmac('sha256', SECRETO()).update(cuerpo).digest('base64url');
+}
+function leerToken(t) {
+  const [cuerpo, firma] = String(t || '').split('.');
+  if (!cuerpo || !firma) return null;
+  const esperada = crypto.createHmac('sha256', SECRETO()).update(cuerpo).digest('base64url');
+  if (firma.length !== esperada.length || !crypto.timingSafeEqual(Buffer.from(firma), Buffer.from(esperada))) return null;
+  const d = JSON.parse(Buffer.from(cuerpo, 'base64url').toString());
+  return d.exp > Date.now() ? { usuario: d.u, nombre: d.n, perfil: d.p } : null;
+}
+const hashClave = (clave, sal = crypto.randomBytes(16).toString('hex')) => `${sal}:${crypto.scryptSync(String(clave), sal, 32).toString('hex')}`;
+function claveOk(clave, hash) {
+  const [sal, h] = String(hash || '').split(':');
+  if (!sal || !h) return false;
+  const calc = crypto.scryptSync(String(clave), sal, 32).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(calc), Buffer.from(h));
+}
+// Usuarios desactivados: se revisa cada minuto
+const USUARIOS_ACTIVOS = new Map();
+async function sigueActivo(usuario) {
+  if (usuario === 'admin') return true;
+  const c = USUARIOS_ACTIVOS.get(usuario);
+  if (c && Date.now() - c.ts < 60000) return c.activo;
+  let activo = true;
+  try { const u = await db.buscarUsuario(usuario); activo = Boolean(u?.activo); } catch (_) {}
+  USUARIOS_ACTIVOS.set(usuario, { activo, ts: Date.now() });
+  return activo;
+}
+async function exigirClave(req, res, next) {
+  const clave = process.env.PANEL_CLAVE;
+  const tok = leerToken(req.get('x-panel-token'));
+  if (tok) {
+    if (!(await sigueActivo(tok.usuario))) return res.status(401).json({ error: 'Tu usuario está desactivado.' });
+    req.usuario = tok;
+  } else if (clave && req.get('x-panel-clave') === clave) {
+    req.usuario = { usuario: 'admin', nombre: 'Administrador', perfil: 'admin' };
+  } else {
+    return res.status(401).json({ error: 'Tu sesión terminó. Vuelve a entrar.' });
+  }
+  // Quien hace el cambio es SIEMPRE el usuario que entró (no lo que diga el navegador).
+  if (req.body && typeof req.body === 'object') req.body.auditor = req.usuario.nombre;
+  next();
+}
+// Permiso por acción según el perfil
+const puede = (req, permiso) => (PERFILES[req.usuario?.perfil]?.permisos || []).includes(permiso);
+const PERMISO_RUTA = {
+  '/api/panel/gestion-bo': ['gestion', 'torre'], '/api/panel/instalacion': ['gestion'], '/api/panel/ot': ['gestion'], '/api/panel/escalamiento': ['gestion'],
+  '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
+  '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
+  '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
+};
+app.use('/api/panel', (req, res, next) => {
+  if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
+  const ruta = req.path; // se guarda aquí: más adelante Express le devuelve el prefijo /api/panel
+  return exigirClave(req, res, () => {
+    const necesita = PERMISO_RUTA['/api/panel' + ruta];
+    if (necesita && !necesita.some((p) => puede(req, p))) return res.status(403).json({ error: `Tu perfil (${PERFILES[req.usuario.perfil]?.nombre || req.usuario.perfil}) no puede hacer esto.` });
+    // El perfil "torre" solo cambia la torre de control: lo demás de la venta queda como estaba.
+    if (ruta === '/gestion-bo' && !puede(req, 'gestion')) req.body._soloTorre = true;
+    // Historial: se guarda cada cambio que salga bien
+    const json = res.json.bind(res);
+    res.json = (cuerpo) => {
+      if (res.statusCode < 400) {
+        const b = { ...(req.body || {}) }; delete b.clave; delete b.clave_nueva; delete b.auditor; delete b._soloTorre;
+        if (Array.isArray(b.asesores)) b.asesores = `${b.asesores.length} asesores`;
+        db.registrarHistorial({ usuario: req.usuario.usuario, nombre: req.usuario.nombre, perfil: req.usuario.perfil, accion: ruta.replace(/^\//, ''),
+          registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: b }).catch((e) => console.error('Historial:', e.message));
+      }
+      return json(cuerpo);
+    };
+    next();
+  });
+});
+
+// Entrar con usuario y contraseña
+app.post('/api/panel/login', async (req, res) => {
+  try {
+    const usuario = String(req.body?.usuario || '').trim().toLowerCase();
+    const clave = String(req.body?.clave || '');
+    if (!usuario || !clave) return res.status(400).json({ error: 'Escribe tu usuario y contraseña.' });
+    // Respaldo: usuario "admin" con la clave PANEL_CLAVE de Render
+    if (usuario === 'admin' && process.env.PANEL_CLAVE && clave === process.env.PANEL_CLAVE) {
+      const u = { usuario: 'admin', nombre: 'Administrador', perfil: 'admin' };
+      return res.json({ ok: true, token: firmarToken(u), ...u, permisos: PERFILES.admin.permisos });
+    }
+    let u = null;
+    try { u = await db.buscarUsuario(usuario); } catch (e) {
+      return res.status(500).json({ error: /panel_usuarios/.test(e.message) ? 'Falta correr supabase_usuarios.sql en Supabase. Mientras tanto entra con usuario "admin" y la clave del panel.' : e.message });
+    }
+    if (!u || !claveOk(clave, u.hash)) return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
+    if (!u.activo) return res.status(401).json({ error: 'Tu usuario está desactivado. Habla con el administrador.' });
+    db.marcarIngreso(u.usuario).catch(() => {});
+    db.registrarHistorial({ usuario: u.usuario, nombre: u.nombre, perfil: u.perfil, accion: 'ingreso', registro: '', detalle: {} }).catch(() => {});
+    res.json({ ok: true, token: firmarToken(u), usuario: u.usuario, nombre: u.nombre, perfil: u.perfil, permisos: PERFILES[u.perfil]?.permisos || ['ver'] });
+  } catch (err) {
+    console.error('Error panel/login:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+// ¿Sigue válida la sesión? (al recargar la página)
+app.get('/api/panel/login', exigirClave, (req, res) => res.json({ ok: true, ...req.usuario, permisos: PERFILES[req.usuario.perfil]?.permisos || ['ver'] }));
+
+// Cambiar mi propia contraseña
+app.post('/api/panel/mi-clave', exigirClave, async (req, res) => {
+  try {
+    const { clave, clave_nueva } = req.body || {};
+    if (req.usuario.usuario === 'admin') return res.status(400).json({ error: 'El usuario admin de respaldo usa la clave de Render.' });
+    if (String(clave_nueva || '').length < 6) return res.status(400).json({ error: 'La nueva contraseña debe tener mínimo 6 caracteres.' });
+    const u = await db.buscarUsuario(req.usuario.usuario);
+    if (!u || !claveOk(clave, u.hash)) return res.status(400).json({ error: 'La contraseña actual no es correcta.' });
+    await db.guardarUsuario({ usuario: u.usuario, nombre: u.nombre, perfil: u.perfil, activo: u.activo, hash: hashClave(clave_nueva) });
+    db.registrarHistorial({ usuario: u.usuario, nombre: u.nombre, perfil: u.perfil, accion: 'cambio de contraseña', registro: u.usuario, detalle: {} }).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔐 Usuarios (solo admin)
+app.get('/api/panel/usuarios', exigirClave, async (req, res) => {
+  if (!puede(req, 'usuarios')) return res.status(403).json({ error: 'Solo el administrador ve los usuarios.' });
+  try { res.json({ usuarios: await db.listarUsuarios(), perfiles: PERFILES }); }
+  catch (err) { res.status(500).json({ error: /panel_usuarios/.test(err.message) ? 'Falta correr supabase_usuarios.sql en Supabase.' : err.message }); }
+});
+app.post('/api/panel/usuarios', async (req, res) => {
+  try {
+    const usuario = String(req.body?.usuario || '').trim().toLowerCase().replace(/\s+/g, '.');
+    const nombre = String(req.body?.nombreUsuario || '').trim();
+    const perfil = String(req.body?.perfil || '');
+    const { activo, claveNueva } = req.body || {};
+    if (!/^[a-z0-9._-]{3,}$/.test(usuario)) return res.status(400).json({ error: 'El usuario debe tener mínimo 3 letras o números (sin espacios).' });
+    if (usuario === 'admin') return res.status(400).json({ error: '"admin" está reservado.' });
+    if (!PERFILES[perfil]) return res.status(400).json({ error: 'Perfil no válido.' });
+    const antes = await db.buscarUsuario(usuario);
+    if (!antes && String(claveNueva || '').length < 6) return res.status(400).json({ error: 'Pon una contraseña de mínimo 6 caracteres.' });
+    if (!nombre && !antes) return res.status(400).json({ error: 'Escribe el nombre de la persona.' });
+    const fila = { usuario, nombre: nombre || antes.nombre, perfil, activo: activo ?? antes?.activo ?? true, hash: claveNueva ? hashClave(claveNueva) : antes.hash };
+    const u = await db.guardarUsuario(fila);
+    USUARIOS_ACTIVOS.delete(usuario);
+    res.json({ ok: true, usuario: u });
+  } catch (err) {
+    console.error('Error panel/usuarios:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 📜 Historial de cambios (admin y supervisor)
+app.get('/api/panel/historial', exigirClave, async (req, res) => {
+  if (!puede(req, 'historial')) return res.status(403).json({ error: 'Tu perfil no puede ver el historial.' });
+  try {
+    const desde = isoColombia(req.query.desde, false), hasta = isoColombia(req.query.hasta, true);
+    res.json({ historial: await db.leerHistorial({ desde, hasta, usuario: req.query.usuario || '' }) });
+  } catch (err) {
+    res.status(500).json({ error: /panel_historial/.test(err.message) ? 'Falta correr supabase_usuarios.sql en Supabase.' : err.message });
+  }
+});
 
 app.get('/api/panel/datos', exigirClave, async (req, res) => {
   try {
@@ -1629,6 +1793,11 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
       return res.status(400).json({ error: 'Torre de control: elige la fecha del nuevo reagendamiento.' });
     }
     const antes = await db.obtenerVenta(id);
+    if (req.body._soloTorre && antes) {
+      // Perfil torre: la aprobación BO y la OCM quedan como estaban
+      aprobacion_bo = antes.aprobacion_bo || ''; aprobacion_motivo = antes.aprobacion_motivo || ''; llamada_ocm = antes.llamada_ocm || '';
+      if (!((antes.torre_salida || '') !== (torre_salida || ''))) { estado = antes.estado_instalacion || 'pendiente'; motivo = antes.instalacion_nota || ''; }
+    }
     // La torre y el estado de instalación son lo mismo: si cambia uno, se actualiza el otro.
     const TORRE_A_ESTADO = { instalado: 'instalada', cancelado: 'cancelada', pendiente: 'pendiente', reagendado: 'pendiente', iniciado: 'pendiente', sin_iniciar_am: 'pendiente', sin_iniciar_pm: 'pendiente' };
     const ESTADO_A_TORRE = { instalada: 'instalado', cancelada: 'cancelado' };
