@@ -25,7 +25,7 @@ const COLS_INTERESADO = {
 };
 const COLS_VENTA = [
   'nombre_cliente', 'cedula', 'telefono', 'direccion', 'barrio', 'ciudad', 'plan',
-  'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones',
+  'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones', 'tipo_venta',
 ];
 
 // Inicio del día de hoy en hora Colombia (UTC-5), en ISO.
@@ -89,7 +89,12 @@ async function guardarVenta(asesor, cliente, datos) {
     row.created_at = new Date(`${completo.fecha_venta}T12:00:00-05:00`).toISOString();
     row.datos = { ...completo, registrada_el: new Date().toISOString() };
   }
-  const { data, error } = await supabase.from('ventas').insert(row).select().single();
+  let { data, error } = await supabase.from('ventas').insert(row).select().single();
+  // Si todavía no existe la columna tipo_venta en Supabase, se guarda igual (queda en "datos").
+  if (error && /tipo_venta/.test(error.message || '')) {
+    delete row.tipo_venta;
+    ({ data, error } = await supabase.from('ventas').insert(row).select().single());
+  }
   if (error) throw error;
   return data;
 }
@@ -478,6 +483,28 @@ async function actualizarDireccion(tabla, id, direccion) {
   if (error) throw error;
 }
 
+/** Ventas con instalación agendada (o reagendada por la torre) para un día. fecha = AAAA-MM-DD */
+async function agendaDelDia(fecha) {
+  const supabase = getClient();
+  const [a, m, d] = fecha.split('-');
+  const formatos = [...new Set([`${d}/${m}/${a}`, `${+d}/${+m}/${a}`, `${d}/${+m}/${a}`, `${+d}/${m}/${a}`])];
+  const { data, error } = await supabase.from('ventas').select('*').in('fecha_agenda', formatos).limit(3000);
+  if (error) throw error;
+  let filas = data || [];
+  // Reagendadas por la torre para ese día (si ya existe la columna)
+  const r = await supabase.from('ventas').select('*').eq('torre_fecha_reagenda', fecha).limit(3000);
+  if (!r.error) for (const v of r.data || []) if (!filas.some((x) => x.id === v.id)) filas.push({ ...v, _reagendadaParaHoy: true });
+  return filas;
+}
+/** Ventas registradas en un día (hora Colombia). */
+async function ventasDelDia(fecha) {
+  const desde = new Date(`${fecha}T00:00:00-05:00`).toISOString();
+  const hasta = new Date(new Date(desde).getTime() + 86400000).toISOString();
+  const { data, error } = await getClient().from('ventas').select('*').gte('created_at', desde).lt('created_at', hasta).limit(3000);
+  if (error) throw error;
+  return data || [];
+}
+
 /** Registra la auditoría de cobertura hecha por el back office. */
 async function auditarCobertura(id, { resultado, nota, auditor }) {
   return actualizarInteresado(id, {
@@ -518,4 +545,6 @@ module.exports = {
   actualizarVentasDeInteresado,
   todasLasDirecciones,
   actualizarDireccion,
+  agendaDelDia,
+  ventasDelDia,
 };

@@ -232,6 +232,9 @@ function validarFechaPasada(crudo) {
   return { ok: true, valor: iso };
 }
 
+const TEXTO_TORRE = { instalado: '✅ Instalado', reagendado: '📅 Reagendado', cancelado: '🚫 Cancelado', pendiente: '⏳ Pendiente', iniciado: '🚚 Iniciado', sin_iniciar_am: '🕗 Sin iniciar AM', sin_iniciar_pm: '🕑 Sin iniciar PM' };
+const fechaDM = (iso) => (/^\d{4}-\d{2}-\d{2}/.test(iso || '') ? iso.slice(0, 10).split('-').reverse().join('/') : '');
+const textoTorre = (v) => v.torre_salida ? `Torre: ${TEXTO_TORRE[v.torre_salida] || v.torre_salida}${v.torre_fecha_reagenda ? ` → ${fechaDM(v.torre_fecha_reagenda)}` : ''}${v.torre_motivo ? ` (${v.torre_motivo})` : ''}` : '';
 const TEXTO_APROBACION = { cantada_viable: '✅ Cantada viable', cantada_no_viable: '⚖️ Cantada no viable (50/50)', rechazada: '⛔ Rechazada (no cantada)' };
 // Estado de instalación de una venta (lo marca el back office en el panel).
 function textoInstalacion(v) {
@@ -273,7 +276,7 @@ function tarjetaDe(c) {
   const detalles = [
     ['Gestiona', c.asesor],
     ['Teléfono', c.telefono],
-    ['Dirección', [c.direccion, c.ciudad].filter(Boolean).join(' · ')],
+    ['Dirección', [c.direccion, c.ciudad, regionalDe(c.ciudad, c.datos?.departamento)].filter(Boolean).join(' · ')],
     ['Cobertura', (cob === 'si' ? 'Sí' : cob === 'no' ? 'No' : 'Sin validar') + textoAuditoria(c)],
     ['Registrado', fecha],
   ];
@@ -283,10 +286,12 @@ function tarjetaDe(c) {
     if (v.datos?.registrada_el && v.created_at) {
       detalles.push(['📅 Fecha venta', new Date(v.created_at).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short' }) + ' (fecha anterior)']);
     }
+    detalles.push(['Tipo de venta', v.tipo_venta || v.datos?.tipo_venta]);
     detalles.push(['Cédula', v.cedula], ['Plan', v.plan], ['OT', v.numero_ot], ['Cuenta', v.numero_cuenta]);
     detalles.push(['Agenda', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
     detalles.push(['Instalación', textoInstalacion(v)]);
     if (v.instalacion_nota) detalles.push([/no_instalada|cancelada/.test(v.estado_instalacion || '') ? 'Motivo' : 'Nota instalación', v.instalacion_nota]);
+    if (v.torre_salida) detalles.push(['Torre de control', textoTorre(v).replace(/^Torre: /, '')]);
     if (v.aprobacion_bo) detalles.push(['Aprobación BO', TEXTO_APROBACION[v.aprobacion_bo] + (v.aprobacion_motivo ? ` · ${v.aprobacion_motivo}` : '')]);
   }
   if (c.resultado === 'no_venta' && c.motivo_no_interes) detalles.push(['Motivo', c.motivo_no_interes]);
@@ -335,7 +340,7 @@ function accionesPara(c) {
 // ---------------------------------------------------------------------------
 // Datos que se pueden corregir: los del interesado siempre, los de la venta si tiene venta.
 const EDITABLES_INTERESADO = ['nombre_cliente', 'telefono', 'direccion', 'ciudad'];
-const EDITABLES_VENTA = ['cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+const EDITABLES_VENTA = ['tipo_venta', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
 function campoEditable(id) {
   const todos = [...(CAMPOS().interesado || []), ...(CAMPOS().venta || [])];
   const def = todos.find((c) => c.id === id);
@@ -637,6 +642,58 @@ function homologarDireccion(texto) {
 }
 
 // El asesor escribe la dirección como sea; Marce la deja homologada.
+// ---------------------------------------------------------------------------
+// Regionales (R1–R5) según el departamento de la ciudad
+// ---------------------------------------------------------------------------
+const REGIONAL_DEPTO = {
+  atlantico: 'R1', bolivar: 'R1', cesar: 'R1', cordoba: 'R1', 'la guajira': 'R1', magdalena: 'R1', sucre: 'R1', 'archipielago de san andres': 'R1',
+  antioquia: 'R2', choco: 'R2', caldas: 'R2', quindio: 'R2', risaralda: 'R2',
+  caqueta: 'R3', cauca: 'R3', huila: 'R3', narino: 'R3', putumayo: 'R3', tolima: 'R3', 'valle del cauca': 'R3',
+  'bogota d.c.': 'R4', cundinamarca: 'R4',
+  meta: 'R5', boyaca: 'R5', santander: 'R5', 'norte de santander': 'R5', arauca: 'R5', casanare: 'R5', amazonas: 'R5', guainia: 'R5', guaviare: 'R5', vaupes: 'R5', vichada: 'R5',
+};
+// Barrios, corregimientos y nombres mal escritos que se ven en la operación → regional
+const REGIONAL_CIUDAD = {
+  'san antonio de prado': 'R2', manrique: 'R2', belen: 'R2', rionegro: 'R2', barbosa: 'R2', valparaiso: 'R2', armenia: 'R2', dosquebras: 'R2', 'dos quebradas': 'R2',
+  sohacha: 'R4', sobo: 'R4', bogoat: 'R4', bpgota: 'R4', boogota: 'R4', bgota: 'R4', fuza: 'R4',
+  rioacha: 'R1', satelcaribe: 'R1', guachaca: 'R1', 'san andes': 'R1', bayunca: 'R1', santamarta: 'R1', norosi: 'R1', 'puerto colombia': 'R1',
+  restrepo: 'R5', sopata: 'R5', capinajeo: 'R5', florencia: 'R3', candelaria: 'R3',
+};
+// Departamentos escritos con errores ("CUNDINAMNARCA", "ANTIOQUIIA"…) → regional
+const REGIONAL_TEXTO = [
+  [/^valle( del)?( cau\w*)?$/, 'R3'], [/^cun\w*$|^cind\w*$|^cundi$/, 'R4'], [/^bog\w*( d ?c)?$/, 'R4'], [/^ant\w*qu\w*$|^antio\w*$/, 'R2'], [/^norte (de )?santander$/, 'R5'],
+  [/^san andres$/, 'R1'], [/^atlant\w*$/, 'R1'], [/^(la )?guajira$/, 'R1'], [/^mag\w*na$|^madal\w*$/, 'R1'], [/^cald\w*$/, 'R2'], [/^quind\w*$/, 'R2'], [/^risar\w*$/, 'R2'],
+  [/^(regional )?eje cafetero$/, 'R2'], [/^casanar\w*$/, 'R5'],
+];
+const CACHE_REGIONAL = new Map();
+function regionalDe(ciudad, depto) {
+  if (depto && REGIONAL_DEPTO[norm(depto)]) return REGIONAL_DEPTO[norm(depto)];
+  const t = String(ciudad || '').trim();
+  if (!t) return null;
+  if (CACHE_REGIONAL.has(t)) return CACHE_REGIONAL.get(t);
+  const k = norm(t).replace(/[^a-z0-9() ]/g, ' ').replace(/\s+/g, ' ').trim();
+  let r = REGIONAL_CIUDAD[k] || REGIONAL_DEPTO[k] || null;
+  if (!r) {
+    // Ciudad con departamento: "Granada (Meta)"
+    const conDepto = k.match(/\(([^)]+)\)\s*$/);
+    if (conDepto && REGIONAL_DEPTO[conDepto[1]]) r = REGIONAL_DEPTO[conDepto[1]];
+  }
+  if (!r) {
+    // Nombre exacto de municipio; si hay varios con ese nombre y todos son de la misma regional, se toma esa.
+    const iguales = municipios().filter((m) => m.llave === llaveCiudad(t));
+    const regs = [...new Set(iguales.map((m) => REGIONAL_DEPTO[norm(m.depto)]))];
+    if (regs.length === 1) r = regs[0] || null;
+  }
+  if (!r) for (const [re, reg] of REGIONAL_TEXTO) if (re.test(k)) { r = reg; break; }
+  if (!r) {
+    const m = validarMunicipio(t); // reconoce la ciudad aunque venga con errores de digitación
+    if (m.ok && m.extra?.departamento) r = REGIONAL_DEPTO[norm(m.extra.departamento)] || null;
+  }
+  CACHE_REGIONAL.set(t, r);
+  return r;
+}
+const conRegional = (f) => (f ? { ...f, regional: regionalDe(f.ciudad, f.datos?.departamento) } : f);
+
 function validarDireccion(crudo) {
   const texto = String(crudo || '').trim();
   if (texto.startsWith(DEJAR)) {
@@ -1445,7 +1502,7 @@ app.get('/api/mis-pendientes', async (req, res) => {
         estadoReal: v.estado_instalacion || 'pendiente',
         estadoTexto: textoInstalacion(v),
         // Motivo + aprobación del BO en un solo texto (lo muestra cualquier versión de la extensión).
-        nota: [v.instalacion_nota, v.aprobacion_bo ? `Aprobación BO: ${TEXTO_APROBACION[v.aprobacion_bo]}${v.aprobacion_motivo ? ` (${v.aprobacion_motivo})` : ''}` : '', v.llamada_ocm ? `OCM: ${v.llamada_ocm === 'si' ? 'Sí' : 'No'}` : ''].filter(Boolean).join(' · '),
+        nota: [v.instalacion_nota, v.aprobacion_bo ? `Aprobación BO: ${TEXTO_APROBACION[v.aprobacion_bo]}${v.aprobacion_motivo ? ` (${v.aprobacion_motivo})` : ''}` : '', v.llamada_ocm ? `OCM: ${v.llamada_ocm === 'si' ? 'Sí' : 'No'}` : '', textoTorre(v)].filter(Boolean).join(' · '),
         instaladaReciente: v.estado_instalacion === 'instalada' && Date.now() - new Date(v.instalacion_fecha).getTime() < 2 * 86400000,
         fecha: v.created_at,
       })),
@@ -1482,9 +1539,24 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
     const desde = isoColombia(req.query.desde || hoy, false);
     const hasta = isoColombia(req.query.hasta || hoy, true);
     if (!desde || !hasta) return res.status(400).json({ error: 'Fechas inválidas (usa AAAA-MM-DD).' });
-    res.json(await db.panelDatos(desde, hasta));
+    const d = await db.panelDatos(desde, hasta);
+    for (const k of Object.keys(d)) if (Array.isArray(d[k])) d[k] = d[k].map((f) => ({ ...conRegional(f), venta: f.venta ? conRegional(f.venta) : f.venta, tipo_venta: f.tipo_venta || f.datos?.tipo_venta || undefined }));
+    res.json(d);
   } catch (err) {
     console.error('Error panel/datos:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Agenda del día y "¿Cómo vamos hoy?": ventas agendadas para la fecha y ventas registradas ese día.
+app.get('/api/panel/hoy', exigirClave, async (req, res) => {
+  try {
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyCO();
+    const [agenda, ventas] = await Promise.all([db.agendaDelDia(fecha), db.ventasDelDia(fecha)]);
+    const prep = (v) => ({ ...conRegional(v), tipo_venta: v.tipo_venta || v.datos?.tipo_venta || null });
+    res.json({ fecha, agenda: agenda.map(prep), ventas: ventas.map(prep) });
+  } catch (err) {
+    console.error('Error panel/hoy:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1527,7 +1599,7 @@ app.post('/api/panel/instalacion', exigirClave, async (req, res) => {
 // Gestión completa del BO sobre una venta: instalación (+motivo), aprobación (+motivo) y llamada en OCM.
 app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
   try {
-    const { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, auditor } = req.body || {};
+    const { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, torre_salida, torre_motivo, torre_fecha_reagenda, auditor } = req.body || {};
     if (!id) return res.status(400).json({ error: 'Falta la venta.' });
     if (!['pendiente', 'instalada', 'no_instalada', 'cancelada'].includes(estado)) return res.status(400).json({ error: 'Estado de instalación no válido.' });
     if ((estado === 'no_instalada' || estado === 'cancelada') && !String(motivo || '').trim()) {
@@ -1535,8 +1607,19 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
     }
     if (aprobacion_bo && !TEXTO_APROBACION[aprobacion_bo]) return res.status(400).json({ error: 'Aprobación BO no válida.' });
     if (llamada_ocm && !['si', 'no'].includes(llamada_ocm)) return res.status(400).json({ error: 'Llamada en OCM no válida.' });
+    if (torre_salida && !TEXTO_TORRE[torre_salida]) return res.status(400).json({ error: 'Salida de torre de control no válida.' });
+    const tMotivo = String(torre_motivo || '').trim();
+    if (['reagendado', 'cancelado', 'pendiente'].includes(torre_salida) && !tMotivo) {
+      return res.status(400).json({ error: 'Torre de control: escribe el motivo.' });
+    }
+    if (torre_salida === 'reagendado' && !/^\d{4}-\d{2}-\d{2}$/.test(torre_fecha_reagenda || '')) {
+      return res.status(400).json({ error: 'Torre de control: elige la fecha del nuevo reagendamiento.' });
+    }
     const antes = await db.obtenerVenta(id);
     const cambios = {
+      torre_salida: torre_salida || null,
+      torre_motivo: tMotivo || null,
+      torre_fecha_reagenda: torre_fecha_reagenda || null,
       estado_instalacion: estado,
       instalacion_nota: String(motivo || '').trim() || null,
       aprobacion_bo: aprobacion_bo || null,
@@ -1552,10 +1635,14 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
       cambios.aprobacion_por = auditor || null;
       cambios.aprobacion_fecha = new Date().toISOString();
     }
+    if (!antes || antes.torre_salida !== cambios.torre_salida || antes.torre_motivo !== cambios.torre_motivo || (antes.torre_fecha_reagenda || null) !== cambios.torre_fecha_reagenda) {
+      cambios.torre_por = cambios.torre_salida ? auditor || null : null;
+      cambios.torre_fecha = cambios.torre_salida ? new Date().toISOString() : null;
+    }
     res.json({ ok: true, venta: await db.actualizarVenta(id, cambios) });
   } catch (err) {
     console.error('Error panel/gestion-bo:', err.message);
-    res.status(500).json({ error: /aprobacion|llamada_ocm/.test(err.message) ? 'Falta correr supabase_gestion_bo.sql en Supabase.' : err.message });
+    res.status(500).json({ error: /torre_/.test(err.message) ? 'Falta correr supabase_torre_control.sql en Supabase.' : /aprobacion|llamada_ocm/.test(err.message) ? 'Falta correr supabase_gestion_bo.sql en Supabase.' : err.message });
   }
 });
 
@@ -1676,7 +1763,7 @@ app.post('/api/panel/asesores/unir', exigirClave, async (req, res) => {
 
 // ---------- Registro manual y edición desde el panel ----------
 const CAMPOS_INT_PANEL = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad', 'cobertura_validada', 'resultado', 'motivo_no_interes', 'observaciones'];
-const CAMPOS_VEN_PANEL = ['cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+const CAMPOS_VEN_PANEL = ['tipo_venta', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
 const COMPARTIDOS = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad'];
 const RESULTADOS = ['en_gestion', 'venta', 'no_venta', 'volver_llamar', 'escalado', 'ot_activa'];
 const limpiarCampos = (obj, permitidos) => {

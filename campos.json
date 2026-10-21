@@ -41,6 +41,20 @@
   ],
   "venta": [
     {
+      "id": "tipo_venta",
+      "label": "Tipo de venta",
+      "prompt": "¡Qué buena noticia! 🎉 Dejemos la venta bien registrada. ¿Qué tipo de venta es?",
+      "opciones": [
+        "In Hogar",
+        "In Hogar Out",
+        "In Recu",
+        "Out Hogar",
+        "Recuperacion",
+        "RESCATADA - RECUPERACIÓN",
+        "RESCATADA - OUT"
+      ]
+    },
+    {
       "id": "fecha_venta",
       "label": "Fecha de la venta",
       "prompt": "📅 ¿De qué día es esta venta? Si es de hoy toca \"Hoy\"; si es de un día anterior, elígela en el calendario.",
@@ -57,7 +71,7 @@
     {
       "id": "cedula",
       "label": "Cédula",
-      "prompt": "¡Qué buena noticia! 🎉 Dejemos la venta bien registrada. ¿Cuál es la cédula del cliente?",
+      "prompt": "¿Cuál es la cédula del cliente?",
       "regex": "^[0-9]{6,10}$",
       "normalizar": "solo_numeros",
       "errorMessage": "La cédula debe tener entre 6 y 10 dígitos, solo números."
