@@ -1547,7 +1547,7 @@ const PERFILES = {
   supervisor: { nombre: 'Supervisor', permisos: ['ver', 'gestion', 'torre', 'editar', 'eliminar', 'administrar', 'historial'] },
   backoffice: { nombre: 'Back office', permisos: ['ver', 'gestion', 'torre', 'editar'] },
   gtr: { nombre: 'GTR', permisos: ['ver', 'administrar', 'historial'] },
-  torre: { nombre: 'Torre de control', permisos: ['ver', 'torre'] },
+  torre: { nombre: 'Torre de control', permisos: ['ver', 'gestion', 'torre', 'editar', 'historial'] },
   consulta: { nombre: 'Solo consulta', permisos: ['ver'] },
 };
 const SECRETO = () => process.env.PANEL_SECRETO || process.env.PANEL_CLAVE || 'marce';
