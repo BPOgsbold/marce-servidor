@@ -1546,6 +1546,7 @@ const PERFILES = {
   admin: { nombre: 'Administrador', permisos: ['ver', 'gestion', 'torre', 'editar', 'eliminar', 'administrar', 'usuarios', 'historial'] },
   supervisor: { nombre: 'Supervisor', permisos: ['ver', 'gestion', 'torre', 'editar', 'eliminar', 'administrar', 'historial'] },
   backoffice: { nombre: 'Back office', permisos: ['ver', 'gestion', 'torre', 'editar'] },
+  gtr: { nombre: 'GTR', permisos: ['ver', 'administrar', 'historial'] },
   torre: { nombre: 'Torre de control', permisos: ['ver', 'torre'] },
   consulta: { nombre: 'Solo consulta', permisos: ['ver'] },
 };
@@ -1619,7 +1620,7 @@ app.use('/api/panel', (req, res, next) => {
         const b = { ...(req.body || {}) }; delete b.clave; delete b.clave_nueva; delete b.auditor; delete b._soloTorre;
         if (Array.isArray(b.asesores)) b.asesores = `${b.asesores.length} asesores`;
         db.registrarHistorial({ usuario: req.usuario.usuario, nombre: req.usuario.nombre, perfil: req.usuario.perfil, accion: ruta.replace(/^\//, ''),
-          registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: b }).catch((e) => console.error('Historial:', e.message));
+          registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: req._cambio ? { ...b, _cambio: req._cambio } : b }).catch((e) => console.error('Historial:', e.message));
       }
       return json(cuerpo);
     };
@@ -1776,7 +1777,7 @@ app.post('/api/panel/instalacion', exigirClave, async (req, res) => {
 // Gestión completa del BO sobre una venta: instalación (+motivo), aprobación (+motivo) y llamada en OCM.
 app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
   try {
-    let { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, torre_salida, torre_motivo, torre_fecha_reagenda, auditor } = req.body || {};
+    let { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, torre_salida, torre_motivo, torre_fecha_reagenda, tecnologia, aliado_tecnico, auditor } = req.body || {};
     if (!id) return res.status(400).json({ error: 'Falta la venta.' });
     if (!['pendiente', 'instalada', 'no_instalada', 'cancelada'].includes(estado)) return res.status(400).json({ error: 'Estado de instalación no válido.' });
     if ((estado === 'no_instalada' || estado === 'cancelada') && !String(motivo || '').trim()) {
@@ -1820,6 +1821,10 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
       aprobacion_motivo: String(aprobacion_motivo || '').trim() || null,
       llamada_ocm: llamada_ocm || null,
     };
+    // Tecnología y aliado técnico (los llena la torre); solo si vienen
+    if (tecnologia !== undefined) cambios.tecnologia = String(tecnologia || '').trim().toUpperCase() || null;
+    if (aliado_tecnico !== undefined) cambios.aliado_tecnico = String(aliado_tecnico || '').trim().toUpperCase() || null;
+    req._cambio = { ...fichaOrden(antes), cambios: diferencias(antes, cambios, ['estado_instalacion', 'instalacion_nota', 'aprobacion_bo', 'aprobacion_motivo', 'llamada_ocm', 'torre_salida', 'torre_motivo', 'torre_fecha_reagenda', 'tecnologia', 'aliado_tecnico']) };
     // Quién y cuándo, solo si cambió esa parte
     if (!antes || antes.estado_instalacion !== estado || antes.instalacion_nota !== cambios.instalacion_nota) {
       cambios.instalacion_por = estado === 'pendiente' ? null : auditor || null;
@@ -1836,7 +1841,7 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
     res.json({ ok: true, venta: await db.actualizarVenta(id, cambios) });
   } catch (err) {
     console.error('Error panel/gestion-bo:', err.message);
-    res.status(500).json({ error: /torre_/.test(err.message) ? 'Falta correr supabase_torre_control.sql en Supabase.' : /aprobacion|llamada_ocm/.test(err.message) ? 'Falta correr supabase_gestion_bo.sql en Supabase.' : err.message });
+    res.status(500).json({ error: /tecnologia|aliado_tecnico/.test(err.message) ? 'Falta correr supabase_tecnologia.sql en Supabase.' : /torre_/.test(err.message) ? 'Falta correr supabase_torre_control.sql en Supabase.' : /aprobacion|llamada_ocm/.test(err.message) ? 'Falta correr supabase_gestion_bo.sql en Supabase.' : err.message });
   }
 });
 
@@ -1957,7 +1962,13 @@ app.post('/api/panel/asesores/unir', exigirClave, async (req, res) => {
 
 // ---------- Registro manual y edición desde el panel ----------
 const CAMPOS_INT_PANEL = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad', 'cobertura_validada', 'resultado', 'motivo_no_interes', 'observaciones'];
-const CAMPOS_VEN_PANEL = ['tipo_venta', 'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
+// Qué cambió en una orden (antes → después), para la hoja "Cambios en órdenes"
+function diferencias(antes, despues, campos) {
+  const v = (x) => (x === undefined || x === null ? '' : String(x).trim());
+  return campos.filter((c) => despues[c] !== undefined && (!antes || c in antes) && v(antes?.[c]) !== v(despues[c])).map((c) => ({ campo: c, antes: antes?.[c] ?? null, despues: despues[c] ?? null }));
+}
+const fichaOrden = (v) => ({ ot: v?.numero_ot || '', cliente: v?.nombre_cliente || '', asesor: v?.asesor || '', fecha_agenda: v?.fecha_agenda || '' });
+const CAMPOS_VEN_PANEL = ['tecnologia', 'aliado_tecnico', 'tipo_venta', 'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual', 'cedula', 'barrio', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones'];
 const COMPARTIDOS = ['asesor', 'nombre_cliente', 'telefono', 'direccion', 'ciudad'];
 const RESULTADOS = ['en_gestion', 'venta', 'no_venta', 'volver_llamar', 'escalado', 'ot_activa'];
 const limpiarCampos = (obj, permitidos) => {
@@ -2043,6 +2054,10 @@ app.post('/api/panel/editar', exigirClave, async (req, res) => {
       cliente = await db.actualizarInteresado(interesado_id, i);
       await db.actualizarVentasDeInteresado(interesado_id, limpiarCampos(i, COMPARTIDOS));
     }
+    if (venta_id) {
+      const antesV = await db.obtenerVenta(venta_id).catch(() => null);
+      req._cambio = { ...fichaOrden(antesV), cambios: diferencias(antesV, { ...limpiarCampos(i, CAMPOS_INT_PANEL), ...limpiarCampos(venta || {}, CAMPOS_VEN_PANEL) }, [...new Set([...CAMPOS_INT_PANEL, ...CAMPOS_VEN_PANEL])]) };
+    }
     if (venta && venta_id) {
       const v = limpiarCampos(venta, CAMPOS_VEN_PANEL);
       if (!interesado_id) Object.assign(v, limpiarCampos(i, COMPARTIDOS));
@@ -2054,7 +2069,7 @@ app.post('/api/panel/editar', exigirClave, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Error panel/editar:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: /tecnologia|aliado_tecnico/.test(err.message) ? 'Falta correr supabase_tecnologia.sql en Supabase.' : err.message });
   }
 });
 
@@ -2064,6 +2079,7 @@ app.post('/api/panel/eliminar', exigirClave, async (req, res) => {
     const { tipo, id, auditor } = req.body || {};
     if (!id || !['venta', 'interesado'].includes(tipo)) return res.status(400).json({ error: 'Falta id o el tipo no es válido.' });
     console.log(`Panel: ${auditor || 'alguien'} eliminó ${tipo} ${id}`);
+    if (tipo === 'venta') { const v = await db.obtenerVenta(id).catch(() => null); req._cambio = { ...fichaOrden(v), cambios: [{ campo: 'eliminada', antes: 'venta', despues: 'eliminada' }] }; }
     res.json(tipo === 'venta' ? await db.eliminarVenta(id) : await db.eliminarInteresado(id));
   } catch (err) {
     console.error('Error panel/eliminar:', err);
