@@ -9,7 +9,7 @@ const { responderAyuda, iaDisponible } = require('./claude');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '6mb' }));
 
 const PORT = process.env.PORT || 3000;
 const leer = (archivo) => fs.readFileSync(path.join(__dirname, archivo), 'utf8');
@@ -1604,6 +1604,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -1619,6 +1620,7 @@ app.use('/api/panel', (req, res, next) => {
       if (res.statusCode < 400) {
         const b = { ...(req.body || {}) }; delete b.clave; delete b.clave_nueva; delete b.auditor; delete b._soloTorre;
         if (Array.isArray(b.asesores)) b.asesores = `${b.asesores.length} asesores`;
+        if (Array.isArray(b.filas)) b.filas = `${b.filas.length} filas`;
         db.registrarHistorial({ usuario: req.usuario.usuario, nombre: req.usuario.nombre, perfil: req.usuario.perfil, accion: ruta.replace(/^\//, ''),
           registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: req._cambio ? { ...b, _cambio: req._cambio } : b }).catch((e) => console.error('Historial:', e.message));
       }
@@ -1882,6 +1884,46 @@ app.post('/api/panel/config', exigirClave, async (req, res) => {
     console.error('Error panel/config:', err);
     res.status(500).json({ error: /marce_config/.test(err.message) ? 'Falta crear la tabla marce_config en Supabase (supabase_config.sql).' : err.message });
   }
+});
+
+// ---------- 📥 Importar historial de ventas (Excel) ----------
+// No modifica nada que ya exista: solo agrega las ventas cuya OT (o cuenta + cédula) no está en la base.
+const CAMPOS_IMPORT = ['asesor', 'nombre_cliente', 'cedula', 'telefono', 'direccion', 'barrio', 'ciudad', 'plan', 'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones',
+  'tipo_venta', 'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual', 'tecnologia', 'estado_instalacion', 'instalacion_nota', 'aprobacion_bo', 'aprobacion_motivo', 'llamada_ocm'];
+const dig = (x) => String(x || '').replace(/\D/g, '');
+app.get('/api/panel/importar', exigirClave, async (req, res) => {
+  try { res.json({ importadas: await db.contarImportadas() }); } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/panel/importar', exigirClave, async (req, res) => {
+  try {
+    const { filas = [], simular = false } = req.body || {};
+    if (!Array.isArray(filas) || filas.length > 1000) return res.status(400).json({ error: 'Envía máximo 1000 filas por lote.' });
+    const { ots, cuentas, cedDia } = await db.llavesVentas();
+    const diaCO = (iso) => (iso ? new Date(new Date(iso).getTime() - 5 * 3600e3).toISOString().slice(0, 10) : '');
+    const nuevas = [], existentes = [];
+    for (const f of filas) {
+      const ot = dig(f.numero_ot), cta = dig(f.numero_cuenta) + '|' + dig(f.cedula);
+      // Ya existe si: misma OT · o (sin OT) misma cuenta + cédula · o el mismo cliente (cédula) ya tiene una venta ese mismo día (ej. registrada en Marce sin OT)
+      const cd = dig(f.cedula) && f.created_at ? dig(f.cedula) + '|' + diaCO(f.created_at) : '';
+      if ((ot && ots.has(ot)) || (!ot && dig(f.numero_cuenta) && cuentas.has(cta)) || (cd && cedDia.has(cd))) { existentes.push(f.numero_ot || f.numero_cuenta); continue; }
+      if (ot) ots.add(ot); else cuentas.add(cta); // tampoco se repite dentro del mismo lote
+      const row = { session_id: 'import-' + (ot || dig(f.numero_cuenta) || crypto.randomUUID()), datos: { ...(f.datos || {}), origen: 'importado_excel', importado_el: new Date().toISOString() } };
+      for (const c of CAMPOS_IMPORT) if (f[c] !== undefined && f[c] !== null && f[c] !== '') row[c] = f[c];
+      if (row.direccion) { const h = homologarDireccion(row.direccion); if (h && h.valor) { row.direccion = h.valor; row.datos.direccion_original = h.original; } }
+      if (/^\d{4}-\d{2}-\d{2}T/.test(f.created_at || '')) row.created_at = f.created_at;
+      nuevas.push(row);
+    }
+    if (simular) return res.json({ ok: true, nuevas: nuevas.length, existentes: existentes.length });
+    let guardadas = 0;
+    for (let i = 0; i < nuevas.length; i += 200) guardadas += await db.insertarVentasLote(nuevas.slice(i, i + 200));
+    res.json({ ok: true, nuevas: guardadas, existentes: existentes.length });
+  } catch (err) {
+    console.error('Error panel/importar:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+app.post('/api/panel/importar/deshacer', exigirClave, async (req, res) => {
+  try { res.json({ ok: true, borradas: await db.deshacerImportacion() }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- 👥 Asesores (panel) ----------

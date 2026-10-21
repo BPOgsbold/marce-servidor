@@ -554,7 +554,55 @@ async function auditarCobertura(id, { resultado, nota, auditor }) {
   });
 }
 
+
+// ---------- Importar historial (Excel) ----------
+const soloDigitos = (x) => String(x || '').replace(/\D/g, '');
+/** Llaves de las ventas que ya están en la base: OT y cuenta+cédula (para no repetir). */
+async function llavesVentas() {
+  const supabase = getClient();
+  const ots = new Set(), cuentas = new Set(), cedDia = new Set();
+  for (let desde = 0; ; desde += 1000) {
+    const { data, error } = await supabase.from('ventas').select('numero_ot, numero_cuenta, cedula, created_at').range(desde, desde + 999);
+    if (error) throw error;
+    for (const v of data || []) {
+      if (soloDigitos(v.numero_ot)) ots.add(soloDigitos(v.numero_ot));
+      if (soloDigitos(v.numero_cuenta)) cuentas.add(soloDigitos(v.numero_cuenta) + '|' + soloDigitos(v.cedula));
+      if (soloDigitos(v.cedula) && v.created_at) cedDia.add(soloDigitos(v.cedula) + '|' + new Date(new Date(v.created_at).getTime() - 5 * 3600e3).toISOString().slice(0, 10));
+    }
+    if (!data || data.length < 1000) break;
+  }
+  return { ots, cuentas, cedDia };
+}
+/** Inserta varias ventas de una vez. Si falta una columna en Supabase, se guarda igual (queda en "datos"). */
+async function insertarVentasLote(filas) {
+  if (!filas.length) return 0;
+  const supabase = getClient();
+  let rows = filas.map((f) => ({ ...f }));
+  let { error } = await supabase.from('ventas').insert(rows);
+  for (let i = 0; error && i < 10; i++) {
+    const col = (error.message || '').match(/'([a-z_]+)' column|column "?([a-z_]+)"?/i);
+    const nombre = col && (col[1] || col[2]);
+    if (!nombre || nombre === 'datos' || !rows.some((r) => nombre in r)) break;
+    rows = rows.map((r) => { const x = { ...r }; delete x[nombre]; return x; });
+    ({ error } = await supabase.from('ventas').insert(rows));
+  }
+  if (error) throw error;
+  return rows.length;
+}
+/** Borra solo lo que entró por la importación (session_id empieza por "import-"). */
+async function deshacerImportacion() {
+  const { data, error } = await getClient().from('ventas').delete().like('session_id', 'import-%').select('id');
+  if (error) throw error;
+  return (data || []).length;
+}
+async function contarImportadas() {
+  const { count, error } = await getClient().from('ventas').select('id', { count: 'exact', head: true }).like('session_id', 'import-%');
+  if (error) throw error;
+  return count || 0;
+}
+
 module.exports = {
+  llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
   auditarCobertura,
   crearInteresado,
