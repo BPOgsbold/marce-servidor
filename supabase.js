@@ -225,6 +225,11 @@ async function ventasDeAsesor(asesor) {
   return data || [];
 }
 
+async function obtenerVenta(id) {
+  const { data, error } = await getClient().from('ventas').select('*').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return data;
+}
 async function actualizarVenta(id, cambios) {
   const supabase = getClient();
   const { data, error } = await supabase.from('ventas').update(cambios).eq('id', id).select().single();
@@ -498,6 +503,7 @@ module.exports = {
   escalamientosDeAsesor,
   ventasDeAsesor,
   actualizarVenta,
+  obtenerVenta,
   otActivasDeAsesor,
   leerConfig,
   guardarConfig,

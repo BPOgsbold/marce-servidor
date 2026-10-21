@@ -232,6 +232,7 @@ function validarFechaPasada(crudo) {
   return { ok: true, valor: iso };
 }
 
+const TEXTO_APROBACION = { cantada_viable: '✅ Cantada viable', cantada_no_viable: '⚖️ Cantada no viable (50/50)', rechazada: '⛔ Rechazada (no cantada)' };
 // Estado de instalación de una venta (lo marca el back office en el panel).
 function textoInstalacion(v) {
   const fecha = v.instalacion_fecha
@@ -239,6 +240,7 @@ function textoInstalacion(v) {
     : '';
   if (v.estado_instalacion === 'instalada') return '✅ Instalada' + fecha;
   if (v.estado_instalacion === 'no_instalada') return '❌ No instalada' + fecha;
+  if (v.estado_instalacion === 'cancelada') return '🚫 Cancelada' + fecha;
   return '⏳ Pendiente de instalación';
 }
 
@@ -284,7 +286,8 @@ function tarjetaDe(c) {
     detalles.push(['Cédula', v.cedula], ['Plan', v.plan], ['OT', v.numero_ot], ['Cuenta', v.numero_cuenta]);
     detalles.push(['Agenda', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
     detalles.push(['Instalación', textoInstalacion(v)]);
-    if (v.instalacion_nota) detalles.push(['Nota instalación', v.instalacion_nota]);
+    if (v.instalacion_nota) detalles.push([/no_instalada|cancelada/.test(v.estado_instalacion || '') ? 'Motivo' : 'Nota instalación', v.instalacion_nota]);
+    if (v.aprobacion_bo) detalles.push(['Aprobación BO', TEXTO_APROBACION[v.aprobacion_bo] + (v.aprobacion_motivo ? ` · ${v.aprobacion_motivo}` : '')]);
   }
   if (c.resultado === 'no_venta' && c.motivo_no_interes) detalles.push(['Motivo', c.motivo_no_interes]);
   if (c.ot_activa_numero) {
@@ -1437,9 +1440,12 @@ app.get('/api/mis-pendientes', async (req, res) => {
         plan: v.plan,
         ot: v.numero_ot,
         agenda: [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · '),
-        estado: v.estado_instalacion || 'pendiente',
+        // "cancelada" viaja como no_instalada para que la extensión ya instalada la muestre (el texto dice Cancelada).
+        estado: v.estado_instalacion === 'cancelada' ? 'no_instalada' : v.estado_instalacion || 'pendiente',
+        estadoReal: v.estado_instalacion || 'pendiente',
         estadoTexto: textoInstalacion(v),
-        nota: v.instalacion_nota,
+        // Motivo + aprobación del BO en un solo texto (lo muestra cualquier versión de la extensión).
+        nota: [v.instalacion_nota, v.aprobacion_bo ? `Aprobación BO: ${TEXTO_APROBACION[v.aprobacion_bo]}${v.aprobacion_motivo ? ` (${v.aprobacion_motivo})` : ''}` : '', v.llamada_ocm ? `OCM: ${v.llamada_ocm === 'si' ? 'Sí' : 'No'}` : ''].filter(Boolean).join(' · '),
         instaladaReciente: v.estado_instalacion === 'instalada' && Date.now() - new Date(v.instalacion_fecha).getTime() < 2 * 86400000,
         fecha: v.created_at,
       })),
@@ -1503,7 +1509,8 @@ app.post('/api/panel/ot', exigirClave, async (req, res) => {
 app.post('/api/panel/instalacion', exigirClave, async (req, res) => {
   try {
     const { id, estado, nota, auditor } = req.body || {};
-    if (!id || !['instalada', 'no_instalada', 'pendiente'].includes(estado)) return res.status(400).json({ error: 'Falta id o el estado no es válido.' });
+    if (!id || !['instalada', 'no_instalada', 'cancelada', 'pendiente'].includes(estado)) return res.status(400).json({ error: 'Falta id o el estado no es válido.' });
+    if ((estado === 'no_instalada' || estado === 'cancelada') && !String(nota || '').trim()) return res.status(400).json({ error: 'Escribe el motivo.' });
     const venta = await db.actualizarVenta(id, {
       estado_instalacion: estado,
       instalacion_nota: nota || null,
@@ -1514,6 +1521,41 @@ app.post('/api/panel/instalacion', exigirClave, async (req, res) => {
   } catch (err) {
     console.error('Error panel/instalacion:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Gestión completa del BO sobre una venta: instalación (+motivo), aprobación (+motivo) y llamada en OCM.
+app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
+  try {
+    const { id, estado, motivo, aprobacion_bo, aprobacion_motivo, llamada_ocm, auditor } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'Falta la venta.' });
+    if (!['pendiente', 'instalada', 'no_instalada', 'cancelada'].includes(estado)) return res.status(400).json({ error: 'Estado de instalación no válido.' });
+    if ((estado === 'no_instalada' || estado === 'cancelada') && !String(motivo || '').trim()) {
+      return res.status(400).json({ error: `Escribe el motivo de ${estado === 'cancelada' ? 'cancelación' : 'no instalación'}.` });
+    }
+    if (aprobacion_bo && !TEXTO_APROBACION[aprobacion_bo]) return res.status(400).json({ error: 'Aprobación BO no válida.' });
+    if (llamada_ocm && !['si', 'no'].includes(llamada_ocm)) return res.status(400).json({ error: 'Llamada en OCM no válida.' });
+    const antes = await db.obtenerVenta(id);
+    const cambios = {
+      estado_instalacion: estado,
+      instalacion_nota: String(motivo || '').trim() || null,
+      aprobacion_bo: aprobacion_bo || null,
+      aprobacion_motivo: String(aprobacion_motivo || '').trim() || null,
+      llamada_ocm: llamada_ocm || null,
+    };
+    // Quién y cuándo, solo si cambió esa parte
+    if (!antes || antes.estado_instalacion !== estado || antes.instalacion_nota !== cambios.instalacion_nota) {
+      cambios.instalacion_por = estado === 'pendiente' ? null : auditor || null;
+      cambios.instalacion_fecha = estado === 'pendiente' ? null : new Date().toISOString();
+    }
+    if (!antes || antes.aprobacion_bo !== cambios.aprobacion_bo || antes.aprobacion_motivo !== cambios.aprobacion_motivo || antes.llamada_ocm !== cambios.llamada_ocm) {
+      cambios.aprobacion_por = auditor || null;
+      cambios.aprobacion_fecha = new Date().toISOString();
+    }
+    res.json({ ok: true, venta: await db.actualizarVenta(id, cambios) });
+  } catch (err) {
+    console.error('Error panel/gestion-bo:', err.message);
+    res.status(500).json({ error: /aprobacion|llamada_ocm/.test(err.message) ? 'Falta correr supabase_gestion_bo.sql en Supabase.' : err.message });
   }
 });
 
