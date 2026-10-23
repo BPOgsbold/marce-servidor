@@ -10,6 +10,17 @@ const { responderAyuda, iaDisponible } = require('./claude');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '6mb' }));
+// Registro de peticiones en los logs de Render (para diagnosticar errores de los asesores)
+app.use((req, res, next) => {
+  if (req.path === '/api/health') return next();
+  const t = Date.now();
+  res.on('finish', () => {
+    if (req.path === '/api/chat' || res.statusCode >= 400) {
+      console.log(`[peticion] ${req.method} ${req.path} → ${res.statusCode} · ${Date.now() - t} ms · ${String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0]} · ${req.body?.cedula ? 'cc ' + String(req.body.cedula).slice(-4) : req.body?.asesor || ''}`);
+    }
+  });
+  next();
+});
 
 const PORT = process.env.PORT || 3000;
 const leer = (archivo) => fs.readFileSync(path.join(__dirname, archivo), 'utf8');
@@ -291,6 +302,8 @@ function tarjetaDe(c) {
     if (serv) detalles.push(['Servicios vendidos', String(serv)]);
     const multi = v.multiasistencia || v.datos?.multiasistencia;
     if (multi) detalles.push(['Multiasistencia', norm(multi) === 'si' ? `Sí · ${v.multiasistencia_cual || v.datos?.multiasistencia_cual || ''}` : 'No']);
+    const ott = v.ott || v.datos?.ott;
+    if (ott) detalles.push(['OTT', norm(ott) === 'si' ? `Sí · ${v.ott_cual || v.datos?.ott_cual || ''}` : 'No']);
     detalles.push(['Cédula', v.cedula], ['Plan', v.plan], ['OT', v.numero_ot], ['Cuenta', v.numero_cuenta]);
     detalles.push(['Agenda', [v.fecha_agenda, v.hora_agenda].filter(Boolean).join(' · ')]);
     detalles.push(['Instalación', textoInstalacion(v)]);

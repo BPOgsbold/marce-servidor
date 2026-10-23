@@ -153,7 +153,7 @@
     {
       "id": "multiasistencia",
       "label": "¿Vendió multiasistencia?",
-      "prompt": "Última pregunta 🙌 ¿Vendió multiasistencias?",
+      "prompt": "Ya casi 🙌 ¿Vendió multiasistencias?",
       "opciones": [
         "Sí",
         "No"
@@ -167,6 +167,33 @@
       "errorMessage": "Escribe cuál multiasistencia vendió.",
       "siCampo": {
         "id": "multiasistencia",
+        "valor": "Sí"
+      }
+    },
+    {
+      "id": "ott",
+      "label": "¿Vendió OTT?",
+      "prompt": "Última pregunta 🙌 ¿Vendió plataformas OTT (Netflix, Amazon Prime, Win+, Disney+, Max…)?",
+      "opciones": [
+        "Sí",
+        "No"
+      ]
+    },
+    {
+      "id": "ott_cual",
+      "label": "OTT vendidas",
+      "prompt": "¿Cuáles OTT vendió? Escríbelas separadas por coma (ej: Netflix, Win+).",
+      "regex": "^.{2,}$",
+      "opcionesSugeridas": [
+        "Netflix",
+        "Amazon Prime",
+        "Win+",
+        "Disney+",
+        "Max"
+      ],
+      "errorMessage": "Escribe cuáles OTT vendió.",
+      "siCampo": {
+        "id": "ott",
         "valor": "Sí"
       }
     }
