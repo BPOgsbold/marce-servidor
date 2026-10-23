@@ -531,11 +531,11 @@ async function marcarIngreso(usuario) {
   await getClient().from('panel_usuarios').update({ ultimo_ingreso: new Date().toISOString() }).eq('usuario', usuario);
 }
 async function registrarHistorial(fila) {
-  const { error } = await getClient().from('panel_historial').insert(fila);
+  const { error } = await getClient().from('marce_historial').insert(fila);
   if (error) throw error;
 }
 async function leerHistorial({ desde, hasta, usuario }) {
-  let q = getClient().from('panel_historial').select('*').order('fecha', { ascending: false }).limit(3000);
+  let q = getClient().from('marce_historial').select('*').order('fecha', { ascending: false }).limit(3000);
   if (desde) q = q.gte('fecha', desde);
   if (hasta) q = q.lt('fecha', hasta);
   if (usuario) q = q.eq('usuario', usuario);
@@ -601,7 +601,26 @@ async function contarImportadas() {
   return count || 0;
 }
 
+
+// ---------- Campaña por día (un asesor que ese día trabajó en otra campaña) ----------
+async function leerCampanasDia(desde, hasta) {
+  let q = getClient().from('marce_campana_dia').select('*').order('fecha', { ascending: false }).limit(5000);
+  if (desde) q = q.gte('fecha', desde);
+  if (hasta) q = q.lte('fecha', hasta);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+async function guardarCampanaDia(fecha, asesor, campana, por) {
+  const t = getClient().from('marce_campana_dia');
+  if (!campana) { const { error } = await t.delete().eq('fecha', fecha).eq('asesor', asesor); if (error) throw error; return null; }
+  const { data, error } = await t.upsert({ fecha, asesor, campana, por: por || null, actualizado: new Date().toISOString() }).select().single();
+  if (error) throw error;
+  return data;
+}
+
 module.exports = {
+  leerCampanasDia, guardarCampanaDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
   auditarCobertura,

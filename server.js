@@ -1604,7 +1604,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
-  '/api/panel/importar': ['usuarios'], '/api/panel/importar/deshacer': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -1709,7 +1709,7 @@ app.get('/api/panel/historial', exigirClave, async (req, res) => {
     const desde = isoColombia(req.query.desde, false), hasta = isoColombia(req.query.hasta, true);
     res.json({ historial: await db.leerHistorial({ desde, hasta, usuario: req.query.usuario || '' }) });
   } catch (err) {
-    res.status(500).json({ error: /panel_historial/.test(err.message) ? 'Falta correr supabase_usuarios.sql en Supabase.' : err.message });
+    res.status(500).json({ error: /marce_historial/.test(err.message) ? 'Falta correr supabase_historial.sql en Supabase.' : err.message });
   }
 });
 
@@ -1884,6 +1884,19 @@ app.post('/api/panel/config', exigirClave, async (req, res) => {
     console.error('Error panel/config:', err);
     res.status(500).json({ error: /marce_config/.test(err.message) ? 'Falta crear la tabla marce_config en Supabase (supabase_config.sql).' : err.message });
   }
+});
+
+// ---------- 📅 Campaña por día ----------
+app.get('/api/panel/campana-dia', exigirClave, async (req, res) => {
+  try { res.json({ dias: await db.leerCampanasDia(req.query.desde, req.query.hasta) }); }
+  catch (err) { res.status(500).json({ error: /marce_campana_dia/.test(err.message) ? 'Falta correr supabase_campana_dia.sql en Supabase.' : err.message }); }
+});
+app.post('/api/panel/campana-dia', exigirClave, async (req, res) => {
+  try {
+    const { fecha, asesor, campana } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '') || !String(asesor || '').trim()) return res.status(400).json({ error: 'Falta la fecha o el asesor.' });
+    res.json({ ok: true, dia: await db.guardarCampanaDia(fecha, String(asesor).trim(), String(campana || '').trim(), req.usuario?.nombre) });
+  } catch (err) { res.status(500).json({ error: /marce_campana_dia/.test(err.message) ? 'Falta correr supabase_campana_dia.sql en Supabase.' : err.message }); }
 });
 
 // ---------- 📥 Importar historial de ventas (Excel) ----------
