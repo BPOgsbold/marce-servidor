@@ -1818,7 +1818,8 @@ app.post('/api/panel/gestion-bo', exigirClave, async (req, res) => {
     const cambios = {
       torre_salida: torre_salida || null,
       torre_motivo: String(torre_motivo || '').trim() || null,
-      torre_fecha_reagenda: torre_fecha_reagenda || null,
+      // La nueva fecha solo aplica si la salida es reagendado/pendiente (así no queda una fecha vieja colgada)
+      torre_fecha_reagenda: ['reagendado', 'pendiente'].includes(torre_salida) ? torre_fecha_reagenda || null : null,
       estado_instalacion: estado,
       instalacion_nota: String(motivo || '').trim() || null,
       aprobacion_bo: aprobacion_bo || null,
