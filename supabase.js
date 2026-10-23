@@ -619,7 +619,30 @@ async function guardarCampanaDia(fecha, asesor, campana, por) {
   return data;
 }
 
+
+/** Ventas con fecha de instalación (agenda o reagenda) entre dos días AAAA-MM-DD, sin importar cuándo se vendieron. */
+async function ventasPorAgenda(desde, hasta) {
+  const supabase = getClient();
+  const dias = [];
+  for (let d = new Date(desde + 'T12:00:00Z'), fin = new Date(hasta + 'T12:00:00Z'); d <= fin && dias.length < 400; d.setUTCDate(d.getUTCDate() + 1)) dias.push(d.toISOString().slice(0, 10));
+  const formatos = (f) => { const [a, m, d] = f.split('-'); return [...new Set([`${d}/${m}/${a}`, `${+d}/${+m}/${a}`, `${d}/${+m}/${a}`, `${+d}/${m}/${a}`, f])]; };
+  const m = new Map();
+  for (let i = 0; i < dias.length; i += 15) {
+    const lote = dias.slice(i, i + 15).flatMap(formatos);
+    for (let desdeFila = 0; desdeFila < 20000; desdeFila += 1000) {
+      const { data, error } = await supabase.from('ventas').select('*').in('fecha_agenda', lote).range(desdeFila, desdeFila + 999);
+      if (error) throw error;
+      for (const v of data || []) m.set(v.id, v);
+      if (!data || data.length < 1000) break;
+    }
+  }
+  const r = await supabase.from('ventas').select('*').gte('torre_fecha_reagenda', desde).lte('torre_fecha_reagenda', hasta).limit(5000);
+  if (!r.error) for (const v of r.data || []) m.set(v.id, v);
+  return [...m.values()];
+}
+
 module.exports = {
+  ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,

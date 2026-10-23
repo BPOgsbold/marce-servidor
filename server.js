@@ -1720,6 +1720,8 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
     const hasta = isoColombia(req.query.hasta || hoy, true);
     if (!desde || !hasta) return res.status(400).json({ error: 'Fechas inválidas (usa AAAA-MM-DD).' });
     const d = await db.panelDatos(desde, hasta);
+    // Ventas que se instalan / tienen agenda en el rango (aunque se hayan vendido antes)
+    try { d.ventasAgenda = await db.ventasPorAgenda(req.query.desde || hoy, req.query.hasta || hoy); } catch (e) { console.error('ventasPorAgenda:', e.message); d.ventasAgenda = []; }
     for (const k of Object.keys(d)) if (Array.isArray(d[k])) d[k] = d[k].map((f) => ({ ...conRegional(f), venta: f.venta ? conRegional(f.venta) : f.venta, tipo_venta: f.tipo_venta || f.datos?.tipo_venta || undefined, servicios_vendidos: f.servicios_vendidos || f.datos?.servicios_vendidos || undefined, multiasistencia: f.multiasistencia || f.datos?.multiasistencia || undefined, multiasistencia_cual: f.multiasistencia_cual || f.datos?.multiasistencia_cual || undefined }));
     res.json(d);
   } catch (err) {
@@ -1884,6 +1886,15 @@ app.post('/api/panel/config', exigirClave, async (req, res) => {
     console.error('Error panel/config:', err);
     res.status(500).json({ error: /marce_config/.test(err.message) ? 'Falta crear la tabla marce_config en Supabase (supabase_config.sql).' : err.message });
   }
+});
+
+// Ventas con fecha de instalación (agenda o reagenda) en un rango: para mirar la torre hacia atrás
+app.get('/api/panel/agenda-rango', exigirClave, async (req, res) => {
+  try {
+    const { desde, hasta } = req.query;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde || '') || !/^\d{4}-\d{2}-\d{2}$/.test(hasta || '')) return res.status(400).json({ error: 'Fechas inválidas.' });
+    res.json({ ventas: (await db.ventasPorAgenda(desde, hasta)).map(conRegional) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- 📅 Campaña por día ----------
