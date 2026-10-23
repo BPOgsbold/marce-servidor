@@ -641,7 +641,21 @@ async function ventasPorAgenda(desde, hasta) {
   return [...m.values()];
 }
 
+
+/** Ventas que la torre o el BO gestionaron en un día (cualquier fecha de agenda). */
+async function ventasGestionadasDia(fecha) {
+  const desde = new Date(`${fecha}T00:00:00-05:00`).toISOString();
+  const hasta = new Date(new Date(desde).getTime() + 86400000).toISOString();
+  const m = new Map();
+  for (const col of ['torre_fecha', 'instalacion_fecha']) {
+    const { data, error } = await getClient().from('ventas').select('*').gte(col, desde).lt(col, hasta).limit(3000);
+    if (!error) for (const v of data || []) m.set(v.id, v);
+  }
+  return [...m.values()];
+}
+
 module.exports = {
+  ventasGestionadasDia,
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,

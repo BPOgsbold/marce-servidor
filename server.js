@@ -1734,9 +1734,9 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
 app.get('/api/panel/hoy', exigirClave, async (req, res) => {
   try {
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyCO();
-    const [agenda, ventas] = await Promise.all([db.agendaDelDia(fecha), db.ventasDelDia(fecha)]);
+    const [agenda, ventas, gestionadas] = await Promise.all([db.agendaDelDia(fecha), db.ventasDelDia(fecha), db.ventasGestionadasDia(fecha).catch(() => [])]);
     const prep = (v) => ({ ...conRegional(v), tipo_venta: v.tipo_venta || v.datos?.tipo_venta || null, servicios_vendidos: v.servicios_vendidos || v.datos?.servicios_vendidos || null, multiasistencia: v.multiasistencia || v.datos?.multiasistencia || null, multiasistencia_cual: v.multiasistencia_cual || v.datos?.multiasistencia_cual || null });
-    res.json({ fecha, agenda: agenda.map(prep), ventas: ventas.map(prep) });
+    res.json({ fecha, agenda: agenda.map(prep), ventas: ventas.map(prep), gestionadas: gestionadas.map(prep) });
   } catch (err) {
     console.error('Error panel/hoy:', err.message);
     res.status(500).json({ error: err.message });
