@@ -1629,7 +1629,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
-  '/api/panel/importar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -1964,13 +1964,21 @@ app.post('/api/panel/importar', exigirClave, async (req, res) => {
       nuevas.push(row);
     }
     if (simular) return res.json({ ok: true, nuevas: nuevas.length, existentes: existentes.length });
+    // Cada venta nueva queda enlazada al interesado que ya existía con el mismo celular
+    const mapa = await db.mapaInteresadosPorCelular().catch(() => new Map());
+    const aMarcar = new Set();
+    for (const row of nuevas) { const i = db.interesadoDeVenta(row, mapa); if (i) { row.interesado_id = i.id; if (i.resultado !== 'venta') aMarcar.add(i.id); } }
     let guardadas = 0;
     for (let i = 0; i < nuevas.length; i += 200) guardadas += await db.insertarVentasLote(nuevas.slice(i, i + 200));
-    res.json({ ok: true, nuevas: guardadas, existentes: existentes.length });
+    if (aMarcar.size) await db.marcarInteresadosVenta([...aMarcar]).catch((e) => console.error('marcar venta:', e.message));
+    res.json({ ok: true, nuevas: guardadas, existentes: existentes.length, enlazadas: nuevas.filter((r) => r.interesado_id).length });
   } catch (err) {
     console.error('Error panel/importar:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+app.post('/api/panel/importar/enlazar', exigirClave, async (req, res) => {
+  try { res.json({ ok: true, ...(await db.enlazarVentasImportadas()) }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 app.post('/api/panel/importar/deshacer', exigirClave, async (req, res) => {
   try { res.json({ ok: true, borradas: await db.deshacerImportacion() }); } catch (err) { res.status(500).json({ error: err.message }); }

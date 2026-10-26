@@ -596,6 +596,7 @@ async function insertarVentasLote(filas) {
 async function deshacerImportacion() {
   const { data, error } = await getClient().from('ventas').delete().like('session_id', 'import-%').select('id');
   if (error) throw error;
+  await getClient().from('interesados').delete().like('session_id', 'import-%'); // fichas creadas al abrir ventas importadas
   return (data || []).length;
 }
 async function contarImportadas() {
@@ -669,6 +670,13 @@ async function obtenerClienteOVenta(id) {
   if (e2) throw e2;
   if (!v) throw new Error('ese cliente ya no existe');
   if (v.interesado_id) return obtenerCliente(v.interesado_id);
+  // ¿Ya existía el interesado (mismo celular)? Se enlaza a ese en vez de crear otro
+  const previo = interesadoDeVenta(v, await mapaInteresadosPorCelular());
+  if (previo) {
+    await supabase.from('ventas').update({ interesado_id: previo.id }).eq('id', v.id);
+    if (previo.resultado !== 'venta') await supabase.from('interesados').update({ resultado: 'venta', updated_at: new Date().toISOString() }).eq('id', previo.id);
+    return obtenerCliente(previo.id);
+  }
   const fila = {
     session_id: 'import-' + v.id, asesor: v.asesor || null, nombre_cliente: v.nombre_cliente || null, telefono: v.telefono || null,
     direccion: v.direccion || null, ciudad: v.ciudad || null, cobertura_validada: 'Sí', resultado: 'venta',
@@ -680,7 +688,63 @@ async function obtenerClienteOVenta(id) {
   return (await adjuntarVentas([nuevo]))[0];
 }
 
+
+// ---------- Enlazar ventas importadas con el interesado que ya existía (mismo celular) ----------
+const digTel = (t) => String(t || '').split('/').map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length === 10);
+/** Mapa celular → interesados (todos), para encontrar la ficha de una venta importada. */
+async function mapaInteresadosPorCelular() {
+  const m = new Map();
+  for (let desde = 0; desde < 100000; desde += 1000) {
+    const { data, error } = await getClient().from('interesados').select('id, telefono, asesor, resultado, created_at').order('created_at', { ascending: false }).range(desde, desde + 999);
+    if (error) throw error;
+    for (const i of data || []) for (const t of digTel(i.telefono)) { if (!m.has(t)) m.set(t, []); m.get(t).push(i); }
+    if (!data || data.length < 1000) break;
+  }
+  return m;
+}
+/** El interesado de una venta: mismo celular; si hay varios, el del mismo asesor y el más reciente. */
+function interesadoDeVenta(v, mapa) {
+  const cands = digTel(v.telefono).flatMap((t) => mapa.get(t) || []);
+  if (!cands.length) return null;
+  return cands.find((i) => i.asesor && v.asesor && i.asesor.toLowerCase() === v.asesor.toLowerCase()) || cands[0];
+}
+/** Enlaza las ventas importadas que aún no tienen ficha con su interesado y lo marca como "venta". */
+async function enlazarVentasImportadas() {
+  const supabase = getClient();
+  const mapa = await mapaInteresadosPorCelular();
+  let revisadas = 0, enlazadas = 0;
+  const pendientes = [];
+  for (let desde = 0; desde < 50000; desde += 1000) {
+    const { data, error } = await supabase.from('ventas').select('id, telefono, asesor, interesado_id').like('session_id', 'import-%').is('interesado_id', null).order('id').range(desde, desde + 999);
+    if (error) throw error;
+    pendientes.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  const marcar = new Set();
+  for (const v of pendientes) {
+    revisadas += 1;
+    const i = interesadoDeVenta(v, mapa);
+    if (!i) continue;
+    const { error: e } = await supabase.from('ventas').update({ interesado_id: i.id }).eq('id', v.id);
+    if (e) throw e;
+    if (i.resultado !== 'venta') { marcar.add(i.id); i.resultado = 'venta'; }
+    enlazadas += 1;
+  }
+  if (marcar.size) await marcarInteresadosVenta([...marcar]);
+  return { revisadas, enlazadas };
+}
+
+
+async function marcarInteresadosVenta(ids) {
+  for (let i = 0; i < ids.length; i += 200) {
+    const { error } = await getClient().from('interesados').update({ resultado: 'venta', updated_at: new Date().toISOString() }).in('id', ids.slice(i, i + 200));
+    if (error) throw error;
+  }
+}
+
 module.exports = {
+  marcarInteresadosVenta,
+  mapaInteresadosPorCelular, interesadoDeVenta, enlazarVentasImportadas,
   obtenerClienteOVenta,
   ventasGestionadasDia,
   ventasPorAgenda,
