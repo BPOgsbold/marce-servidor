@@ -137,7 +137,7 @@ async function buscarClientes(termino) {
 
   const filtros = palabras.map((p) => `nombre_cliente.ilike.%${p}%`);
   filtros.push(`direccion.ilike.%${limpio}%`);
-  if (digitos.length >= 6) filtros.push(`telefono.eq.${digitos}`);
+  if (digitos.length >= 6) filtros.push(`telefono.ilike.%${digitos}%`); // también encuentra clientes con varios números
 
   const { data, error } = await supabase
     .from('interesados')
@@ -171,10 +171,13 @@ async function buscarClientes(termino) {
 
 async function buscarPorTelefono(telefono) {
   const supabase = getClient();
+  // Puede venir uno o varios números ("3001234567 / 3109876543"): se busca cualquiera de ellos
+  const nums = String(telefono || '').split('/').map((x) => x.replace(/\D/g, '')).filter((x) => x.length >= 7);
+  if (!nums.length) return [];
   const { data, error } = await supabase
     .from('interesados')
     .select('*')
-    .eq('telefono', telefono)
+    .or(nums.map((n) => `telefono.ilike.%${n}%`).join(','))
     .order('created_at', { ascending: false })
     .limit(3);
   if (error) throw error;

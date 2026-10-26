@@ -24,10 +24,9 @@
     {
       "id": "telefono",
       "label": "Teléfono",
-      "prompt": "¿Cuál es su número de celular?",
-      "regex": "^3[0-9]{9}$",
-      "normalizar": "solo_numeros",
-      "errorMessage": "El celular debe tener 10 dígitos y empezar en 3 (ej. 3001234567)."
+      "prompt": "¿Cuál es su número de celular? Si tiene varios, escríbelos separados por coma (ej. 3001234567, 3109876543).",
+      "tipo": "telefonos",
+      "errorMessage": "Cada celular debe tener 10 dígitos y empezar en 3 (ej. 3001234567). Si son varios, sepáralos con coma."
     },
     {
       "id": "cobertura",
@@ -82,13 +81,6 @@
       "prompt": "¿En qué ciudad se hace la instalación?",
       "errorMessage": "Escribe el nombre de la ciudad o municipio.",
       "tipo": "municipio"
-    },
-    {
-      "id": "barrio",
-      "label": "Barrio",
-      "prompt": "¿En qué barrio queda la dirección?",
-      "regex": "^.{2,}$",
-      "errorMessage": "Escribe el nombre del barrio."
     },
     {
       "id": "plan",

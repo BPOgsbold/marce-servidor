@@ -736,7 +736,19 @@ function validarDireccion(crudo) {
   };
 }
 
+// Uno o varios celulares: "3001234567, 3109876543" → "3001234567 / 3109876543"
+function validarTelefonos(crudo) {
+  const partes = String(crudo || '').split(/[,;/|]|\s+y\s+|\s{2,}|\n/i).map((x) => x.replace(/\D/g, '')).filter(Boolean)
+    .map((x) => (x.length === 12 && x.startsWith('57') ? x.slice(2) : x));
+  // Si escribió los números seguidos sin separador (ej. "3001234567 3109876543"), se cortan de 10 en 10
+  const nums = partes.flatMap((x) => (x.length > 10 && x.length % 10 === 0 ? x.match(/\d{10}/g) : [x]));
+  const malos = nums.filter((x) => !/^(3\d{9}|60\d{8})$/.test(x));
+  if (!nums.length || malos.length) return { ok: false, mensaje: malos.length && nums.length > 1 ? `Revisa este número: ${malos.join(', ')}. Cada celular debe tener 10 dígitos y empezar en 3.` : '' };
+  return { ok: true, valor: [...new Set(nums)].slice(0, 5).join(' / ') };
+}
+const telefonosDe = (valor) => String(valor || '').split('/').map((x) => x.replace(/\D/g, '')).filter((x) => x.length >= 7);
 function validar(campo, crudo) {
+  if (campo.tipo === 'telefonos') return validarTelefonos(crudo);
   if (campo.tipo === 'municipio') return validarMunicipio(crudo);
   if (campo.tipo === 'direccion') return validarDireccion(crudo);
   if (campo.tipo === 'fecha_futura') return validarFechaFutura(crudo);
@@ -1385,7 +1397,7 @@ async function manejar(sesion, asesor, texto) {
   if (sesion.modo === 'seleccion') {
     const num = parseInt(n, 10);
     let elegido = Number.isInteger(num) ? sesion.resultados[num - 1] : null;
-    if (!elegido) elegido = sesion.resultados.find((c) => norm(c.nombre_cliente) === n || (c.telefono && c.telefono === t.replace(/\D/g, '')));
+    if (!elegido) elegido = sesion.resultados.find((c) => norm(c.nombre_cliente) === n || (c.telefono && t.replace(/\D/g, '').length >= 7 && String(c.telefono).replace(/\D/g, '').includes(t.replace(/\D/g, ''))));
     if (!elegido && !intencion && n.length >= 3) {
       const parecidos = sesion.resultados.filter((c) => norm(c.nombre_cliente).includes(n) || norm(c.direccion).includes(n));
       if (parecidos.length === 1) elegido = parecidos[0];
@@ -2062,8 +2074,9 @@ function validarPanel(i) {
     if (h.ok) i.direccion = h.valor;
   }
   if ('telefono' in i && i.telefono) {
-    i.telefono = soloDigitos(i.telefono);
-    if (!/^3\d{9}$/.test(i.telefono)) return 'El celular debe tener 10 dígitos y empezar en 3.';
+    const t = validarTelefonos(i.telefono);
+    if (!t.ok) return t.mensaje || 'El celular debe tener 10 dígitos y empezar en 3. Si son varios, sepáralos con coma.';
+    i.telefono = t.valor;
   }
   if ('resultado' in i && i.resultado && !RESULTADOS.includes(i.resultado)) return 'Estado no válido.';
   if ('cobertura_validada' in i && i.cobertura_validada) i.cobertura_validada = norm(i.cobertura_validada) === 'si' ? 'sí' : 'no';
