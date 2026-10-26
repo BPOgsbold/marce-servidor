@@ -1629,7 +1629,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
-  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/bases': ['administrar'], '/api/panel/bases/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -1647,6 +1647,7 @@ app.use('/api/panel', (req, res, next) => {
         if (Array.isArray(b.asesores)) b.asesores = `${b.asesores.length} asesores`;
         if (Array.isArray(b.filas)) b.filas = `${b.filas.length} filas`;
         if (Array.isArray(b.cubo)) b.cubo = `${b.cubo.length} grupos`;
+        for (const k of ['tels', 'marcados', 'resumen']) if (b[k]) b[k] = '(omitido)';
         db.registrarHistorial({ usuario: req.usuario.usuario, nombre: req.usuario.nombre, perfil: req.usuario.perfil, accion: ruta.replace(/^\//, ''),
           registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: req._cambio ? { ...b, _cambio: req._cambio } : b }).catch((e) => console.error('Historial:', e.message));
       }
@@ -1946,7 +1947,13 @@ app.post('/api/panel/ocm', exigirClave, async (req, res) => {
     const { dia, campana, cubo, filas, archivo, total } = req.body || {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '') || !Array.isArray(cubo)) return res.status(400).json({ error: 'Falta el día o los datos de la base.' });
     if (cubo.length > 20000 || (filas || []).length > 20000) return res.status(400).json({ error: 'La base es demasiado grande para un solo día.' });
-    res.json({ ok: true, dia: await db.guardarOcmDia({ dia, campana: String(campana || '').trim(), cubo, filas: Array.isArray(filas) ? filas : [], archivo: archivo || null, total: +total || null, cargado_por: req.usuario?.nombre || null }) });
+    const fila = { dia, campana: String(campana || '').trim(), cubo, filas: Array.isArray(filas) ? filas : [], archivo: archivo || null, total: +total || null, cargado_por: req.usuario?.nombre || null };
+    const marcados = typeof req.body.marcados === 'string' ? req.body.marcados.slice(0, 3000000) : null;
+    try { res.json({ ok: true, dia: await db.guardarOcmDia(marcados ? { ...fila, marcados } : fila) }); }
+    catch (e) {
+      if (!/marcados/.test(e.message)) throw e;
+      res.json({ ok: true, dia: await db.guardarOcmDia(fila), aviso: 'Falta correr supabase_bases.sql: sin eso no se cruzan los marcados con las bases.' });
+    }
   } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
 });
 app.post('/api/panel/ocm/borrar', exigirClave, async (req, res) => {
@@ -1970,12 +1977,55 @@ app.get('/api/panel/ocm', exigirClave, async (req, res) => {
     const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
     const meter = (t, x) => { for (const n of partes(t)) (cruce[n] = cruce[n] || []).push(x); };
     for (const i of marce.interesados) meter(i.telefono, { tipo: 'interesado', id: i.id, asesor: i.asesor, resultado: i.resultado || '', fecha: i.created_at, cliente: i.nombre_cliente });
-    for (const v of marce.ventas) meter(v.telefono, { tipo: 'venta', id: v.id, asesor: v.asesor, resultado: 'venta', fecha: v.created_at, cliente: v.nombre_cliente, ot: v.numero_ot, interesado_id: v.interesado_id });
+    for (const v of marce.ventas) meter(v.telefono, { tipo: 'venta', id: v.id, asesor: v.asesor, resultado: 'venta', fecha: v.created_at, cliente: v.nombre_cliente, ot: v.numero_ot, interesado_id: v.interesado_id, agenda: Boolean(v.fecha_agenda), instalada: v.estado_instalacion === 'instalada' || v.torre_salida === 'instalado' });
     // Nombre de cada asesor (OCM trae la cédula)
     const asesores = {};
     try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('ocm asesores:', e.message); }
     res.json({ dias, cruce, asesores });
   } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
+});
+
+// ---------- 🗂 Gestión base de datos (bases preparadas por fuente × marcador OCM × Marce) ----------
+// El panel lee la base preparada (una o varias sub-bases por archivo) y manda por archivo un resumen y sus teléfonos.
+const ERR_BASES = (err) => /marce_base_dia|marcados/.test(err.message) ? 'Falta correr supabase_bases.sql en Supabase.' : err.message;
+app.post('/api/panel/bases', exigirClave, async (req, res) => {
+  try {
+    const { dia, archivo, fuente, canal, campana, resumen, tels, total, archivo_origen } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '') || !String(archivo || '').trim() || typeof tels !== 'string') return res.status(400).json({ error: 'Falta el día, el archivo o los teléfonos.' });
+    res.json({ ok: true, base: await db.guardarBaseDia({ dia, archivo: String(archivo).trim().slice(0, 300), fuente: fuente || null, canal: canal || null, campana: campana || null,
+      resumen: resumen || {}, tels: tels.slice(0, 4000000), total: +total || null, archivo_origen: archivo_origen || null, cargado_por: req.usuario?.nombre || null }) });
+  } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
+});
+app.post('/api/panel/bases/borrar', exigirClave, async (req, res) => {
+  try {
+    const { dia, archivo } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '')) return res.status(400).json({ error: 'Falta el día.' });
+    await db.borrarBaseDia(dia, archivo || null);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
+});
+app.get('/api/panel/bases', exigirClave, async (req, res) => {
+  try {
+    const todos = await db.diasBases();
+    const resumenDias = {};
+    for (const b of todos) { const d = (resumenDias[b.dia] = resumenDias[b.dia] || { dia: b.dia, archivos: 0, total: 0, fuentes: [] }); d.archivos += 1; d.total += b.total || 0; if (b.fuente && !d.fuentes.includes(b.fuente)) d.fuentes.push(b.fuente); }
+    const dias = Object.values(resumenDias).sort((a, b) => (a.dia < b.dia ? 1 : -1));
+    const dia = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dia || '') ? req.query.dia : dias[0]?.dia;
+    if (!dia) return res.json({ dias, dia: null, bases: [], ocm: [], cruce: {} });
+    const [bases, ocm] = await Promise.all([db.leerBasesDia(dia), db.leerOcmDia(dia).catch(() => [])]);
+    // Interesados (nivel ≥ 5) del marcador: se buscan en Marce para saber si hubo venta e instalación
+    const tels = new Set();
+    for (const o of ocm) {
+      for (const f of o.filas || []) if (f[6] >= 5) tels.add(f[0]);
+      for (const p of String(o.marcados || '').split(',')) { const [t, n] = p.split(':'); if (+n >= 5) tels.add(t); }
+    }
+    const marce = tels.size ? await db.marcePorTelefonos([...tels]) : { interesados: [], ventas: [] };
+    const cruce = {};
+    const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
+    for (const i of marce.interesados) for (const n of partes(i.telefono)) (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }).int += 1;
+    for (const v of marce.ventas) for (const n of partes(v.telefono)) { const c = (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }); c.venta += 1; if (v.fecha_agenda) c.agenda += 1; if (v.estado_instalacion === 'instalada' || v.torre_salida === 'instalado') c.inst += 1; }
+    res.json({ dias, dia, bases, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, marcados: o.marcados || '', filas: o.filas || [] })), cruce });
+  } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
 });
 
 // ---------- 📥 Importar historial de ventas (Excel) ----------

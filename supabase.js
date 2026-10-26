@@ -655,13 +655,41 @@ async function marcePorTelefonos(tels) {
     const or = unicos.slice(i, i + 40).map((n) => `telefono.ilike.%${n}%`).join(',');
     const [a, b] = await Promise.all([
       supabase.from('interesados').select('id, telefono, asesor, resultado, created_at, nombre_cliente').or(or).limit(1000),
-      supabase.from('ventas').select('id, telefono, asesor, created_at, nombre_cliente, numero_ot, interesado_id').or(or).limit(1000),
+      supabase.from('ventas').select('id, telefono, asesor, created_at, nombre_cliente, numero_ot, interesado_id, estado_instalacion, torre_salida, fecha_agenda').or(or).limit(1000),
     ]);
     if (a.error) throw a.error;
     if (b.error) throw b.error;
     ints.push(...(a.data || [])); vts.push(...(b.data || []));
   }
   return { interesados: ints, ventas: vts };
+}
+
+// ---------- 🗂 Gestión base de datos: bases preparadas por día y archivo ----------
+async function guardarBaseDia(fila) {
+  const { data, error } = await getClient().from('marce_base_dia').upsert({ ...fila, actualizado: new Date().toISOString() }).select('dia, archivo, fuente, total').single();
+  if (error) throw error;
+  return data;
+}
+async function leerBasesDia(dia) {
+  const { data, error } = await getClient().from('marce_base_dia').select('*').eq('dia', dia).limit(200);
+  if (error) throw error;
+  return data || [];
+}
+async function diasBases() {
+  const { data, error } = await getClient().from('marce_base_dia').select('dia, archivo, fuente, total').order('dia', { ascending: false }).limit(3000);
+  if (error) throw error;
+  return data || [];
+}
+async function borrarBaseDia(dia, archivo) {
+  let q = getClient().from('marce_base_dia').delete().eq('dia', dia);
+  if (archivo) q = q.eq('archivo', archivo);
+  const { error } = await q;
+  if (error) throw error;
+}
+async function leerOcmDia(dia) {
+  const { data, error } = await getClient().from('marce_ocm_dia').select('*').eq('dia', dia);
+  if (error) throw error;
+  return data || [];
 }
 
 /** Ventas con fecha de instalación (agenda o reagenda) entre dos días AAAA-MM-DD, sin importar cuándo se vendieron. */
@@ -790,6 +818,7 @@ module.exports = {
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
   guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos,
+  guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
   auditarCobertura,
