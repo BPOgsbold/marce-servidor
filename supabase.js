@@ -631,6 +631,39 @@ async function guardarCampanaDia(fecha, asesor, campana, por) {
 }
 
 
+// ---------- 📉 Embudo de gestión: base diaria del marcador OCM ----------
+async function guardarOcmDia(fila) {
+  const { data, error } = await getClient().from('marce_ocm_dia').upsert({ ...fila, actualizado: new Date().toISOString() }).select('dia, campana, archivo, cargado_por, actualizado').single();
+  if (error) throw error;
+  return data;
+}
+async function leerOcmDias(desde, hasta) {
+  const { data, error } = await getClient().from('marce_ocm_dia').select('*').gte('dia', desde).lte('dia', hasta).order('dia').limit(400);
+  if (error) throw error;
+  return data || [];
+}
+async function borrarOcmDia(dia, campana) {
+  const { error } = await getClient().from('marce_ocm_dia').delete().eq('dia', dia).eq('campana', campana || '');
+  if (error) throw error;
+}
+// Registros de Marce (interesados y ventas) que tienen alguno de estos celulares (10 dígitos)
+async function marcePorTelefonos(tels) {
+  const supabase = getClient();
+  const unicos = [...new Set(tels.map((t) => String(t).replace(/\D/g, '').slice(-10)).filter((t) => t.length >= 7))];
+  const ints = []; const vts = [];
+  for (let i = 0; i < unicos.length; i += 40) {
+    const or = unicos.slice(i, i + 40).map((n) => `telefono.ilike.%${n}%`).join(',');
+    const [a, b] = await Promise.all([
+      supabase.from('interesados').select('id, telefono, asesor, resultado, created_at, nombre_cliente').or(or).limit(1000),
+      supabase.from('ventas').select('id, telefono, asesor, created_at, nombre_cliente, numero_ot, interesado_id').or(or).limit(1000),
+    ]);
+    if (a.error) throw a.error;
+    if (b.error) throw b.error;
+    ints.push(...(a.data || [])); vts.push(...(b.data || []));
+  }
+  return { interesados: ints, ventas: vts };
+}
+
 /** Ventas con fecha de instalación (agenda o reagenda) entre dos días AAAA-MM-DD, sin importar cuándo se vendieron. */
 async function ventasPorAgenda(desde, hasta) {
   const supabase = getClient();
@@ -756,6 +789,7 @@ module.exports = {
   ventasGestionadasDia,
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
+  guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
   auditarCobertura,

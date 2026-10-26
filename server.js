@@ -1629,7 +1629,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
-  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -1646,6 +1646,7 @@ app.use('/api/panel', (req, res, next) => {
         const b = { ...(req.body || {}) }; delete b.clave; delete b.clave_nueva; delete b.auditor; delete b._soloTorre;
         if (Array.isArray(b.asesores)) b.asesores = `${b.asesores.length} asesores`;
         if (Array.isArray(b.filas)) b.filas = `${b.filas.length} filas`;
+        if (Array.isArray(b.cubo)) b.cubo = `${b.cubo.length} grupos`;
         db.registrarHistorial({ usuario: req.usuario.usuario, nombre: req.usuario.nombre, perfil: req.usuario.perfil, accion: ruta.replace(/^\//, ''),
           registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: req._cambio ? { ...b, _cambio: req._cambio } : b }).catch((e) => console.error('Historial:', e.message));
       }
@@ -1934,6 +1935,47 @@ app.post('/api/panel/campana-dia', exigirClave, async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '') || !String(asesor || '').trim()) return res.status(400).json({ error: 'Falta la fecha o el asesor.' });
     res.json({ ok: true, dia: await db.guardarCampanaDia(fecha, String(asesor).trim(), String(campana || '').trim(), req.usuario?.nombre) });
   } catch (err) { res.status(500).json({ error: /marce_campana_dia/.test(err.message) ? 'Falta correr supabase_campana_dia.sql en Supabase.' : err.message }); }
+});
+
+// ---------- 📉 Embudo de gestión (base del marcador OCM) ----------
+// El panel lee el Excel de OCM y manda por día: un "cubo" (conteos por canal, skill, asesor, tipificación y nivel)
+// y las filas que llegaron a contacto (para ver el detalle). Si se sube otra vez el mismo día, se reemplaza.
+const ERR_OCM = (err) => /marce_ocm_dia/.test(err.message) ? 'Falta correr supabase_ocm.sql en Supabase.' : err.message;
+app.post('/api/panel/ocm', exigirClave, async (req, res) => {
+  try {
+    const { dia, campana, cubo, filas, archivo, total } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '') || !Array.isArray(cubo)) return res.status(400).json({ error: 'Falta el día o los datos de la base.' });
+    if (cubo.length > 20000 || (filas || []).length > 20000) return res.status(400).json({ error: 'La base es demasiado grande para un solo día.' });
+    res.json({ ok: true, dia: await db.guardarOcmDia({ dia, campana: String(campana || '').trim(), cubo, filas: Array.isArray(filas) ? filas : [], archivo: archivo || null, total: +total || null, cargado_por: req.usuario?.nombre || null }) });
+  } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
+});
+app.post('/api/panel/ocm/borrar', exigirClave, async (req, res) => {
+  try {
+    const { dia, campana } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia || '')) return res.status(400).json({ error: 'Falta el día.' });
+    await db.borrarOcmDia(dia, String(campana || '').trim());
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
+});
+// Lee los días cargados y cruza cada interesado de OCM con Marce por celular
+app.get('/api/panel/ocm', exigirClave, async (req, res) => {
+  try {
+    const { desde, hasta } = req.query;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde || '') || !/^\d{4}-\d{2}-\d{2}$/.test(hasta || '')) return res.status(400).json({ error: 'Fechas inválidas.' });
+    const dias = await db.leerOcmDias(desde, hasta);
+    // Nivel 5 = interesado (o más). Columnas de cada fila: [tel, hora, canal, skill, tipificación, asesor, nivel, procedencia, intentos]
+    const tels = []; for (const d of dias) for (const f of d.filas || []) if (f[6] >= 5) tels.push(f[0]);
+    const marce = tels.length ? await db.marcePorTelefonos(tels) : { interesados: [], ventas: [] };
+    const cruce = {};
+    const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
+    const meter = (t, x) => { for (const n of partes(t)) (cruce[n] = cruce[n] || []).push(x); };
+    for (const i of marce.interesados) meter(i.telefono, { tipo: 'interesado', id: i.id, asesor: i.asesor, resultado: i.resultado || '', fecha: i.created_at, cliente: i.nombre_cliente });
+    for (const v of marce.ventas) meter(v.telefono, { tipo: 'venta', id: v.id, asesor: v.asesor, resultado: 'venta', fecha: v.created_at, cliente: v.nombre_cliente, ot: v.numero_ot, interesado_id: v.interesado_id });
+    // Nombre de cada asesor (OCM trae la cédula)
+    const asesores = {};
+    try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('ocm asesores:', e.message); }
+    res.json({ dias, cruce, asesores });
+  } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
 });
 
 // ---------- 📥 Importar historial de ventas (Excel) ----------
