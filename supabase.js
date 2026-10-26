@@ -149,8 +149,14 @@ async function buscarClientes(termino) {
   let filas = data || [];
 
   if (digitos.length >= 6) {
-    const { data: vts, error: e2 } = await supabase.from('ventas').select('interesado_id').eq('cedula', digitos);
+    // Por cédula, celular, OT o cuenta en las ventas (incluye las importadas del Excel)
+    const { data: vts, error: e2 } = await supabase.from('ventas').select('id, interesado_id')
+      .or(`cedula.eq.${digitos},numero_ot.eq.${digitos},numero_cuenta.eq.${digitos},telefono.ilike.%${digitos}%`).limit(10);
     if (e2) throw e2;
+    // Ventas importadas sin ficha de cliente: se enlazan / se les crea la ficha para poder abrirlas
+    for (const v of (vts || []).filter((x) => !x.interesado_id).slice(0, 5)) {
+      try { const c = await obtenerClienteOVenta(v.id); if (c && !filas.some((f) => f.id === c.id)) filas.unshift(c); } catch (e) { console.error('ficha venta importada:', e.message); }
+    }
     const ids = (vts || []).map((v) => v.interesado_id).filter((id) => id && !filas.some((f) => f.id === id));
     if (ids.length) {
       const { data: extra, error: e3 } = await supabase.from('interesados').select('*').in('id', ids);
@@ -161,7 +167,8 @@ async function buscarClientes(termino) {
 
   const sinTildes = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const puntaje = (f) => {
-    if (digitos.length >= 6 && f.telefono === digitos) return 100;
+    if (digitos.length >= 6 && String(f.telefono || '').includes(digitos)) return 100;
+    if (digitos.length >= 6 && f.venta && [f.venta.cedula, f.venta.numero_ot, f.venta.numero_cuenta].includes(digitos)) return 100;
     const nombre = sinTildes(f.nombre_cliente);
     return palabras.filter((p) => nombre.includes(sinTildes(p))).length;
   };
