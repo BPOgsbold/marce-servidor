@@ -1316,7 +1316,7 @@ async function manejar(sesion, asesor, texto) {
   // Abrir un cliente directo (desde las pestañas "Volver a llamar" / "Escalamientos" de la ventana)
   if (t.startsWith('__abrir__:')) {
     try {
-      const cliente = await db.obtenerCliente(t.slice('__abrir__:'.length));
+      const cliente = await db.obtenerClienteOVenta(t.slice('__abrir__:'.length).trim());
       sesion.captura = null;
       return abrirCliente(sesion, cliente);
     } catch (e) {

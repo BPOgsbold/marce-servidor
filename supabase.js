@@ -657,7 +657,31 @@ async function ventasGestionadasDia(fecha) {
   return [...m.values()];
 }
 
+
+/** Abre un cliente por id de interesado o de venta. Las ventas importadas del Excel no tienen ficha de cliente:
+ *  la primera vez que se abren se le crea su ficha y se enlaza la venta (no cambia nada más de la venta). */
+async function obtenerClienteOVenta(id) {
+  const supabase = getClient();
+  const { data: i, error: e1 } = await supabase.from('interesados').select('*').eq('id', id).maybeSingle();
+  if (e1 && !/uuid/i.test(e1.message)) throw e1;
+  if (i) return (await adjuntarVentas([i]))[0];
+  const { data: v, error: e2 } = await supabase.from('ventas').select('*').eq('id', id).maybeSingle();
+  if (e2) throw e2;
+  if (!v) throw new Error('ese cliente ya no existe');
+  if (v.interesado_id) return obtenerCliente(v.interesado_id);
+  const fila = {
+    session_id: 'import-' + v.id, asesor: v.asesor || null, nombre_cliente: v.nombre_cliente || null, telefono: v.telefono || null,
+    direccion: v.direccion || null, ciudad: v.ciudad || null, cobertura_validada: 'Sí', resultado: 'venta',
+    datos: { origen: 'ficha_de_venta_importada', venta_id: v.id }, created_at: v.created_at, updated_at: new Date().toISOString(),
+  };
+  const { data: nuevo, error: e3 } = await supabase.from('interesados').insert(fila).select().single();
+  if (e3) throw e3;
+  await supabase.from('ventas').update({ interesado_id: nuevo.id }).eq('id', v.id);
+  return (await adjuntarVentas([nuevo]))[0];
+}
+
 module.exports = {
+  obtenerClienteOVenta,
   ventasGestionadasDia,
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
