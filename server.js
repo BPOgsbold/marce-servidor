@@ -1895,7 +1895,7 @@ app.post('/api/panel/escalamiento', exigirClave, async (req, res) => {
 });
 
 // Interruptores del panel (ej. permitir ventas con fecha anterior).
-const CLAVES_CONFIG = ['ventas_fecha_anterior'];
+const CLAVES_CONFIG = ['ventas_fecha_anterior', 'metas_cierre'];
 app.get('/api/panel/config', exigirClave, async (req, res) => {
   try {
     res.json(await db.leerConfig());
@@ -1907,7 +1907,9 @@ app.post('/api/panel/config', exigirClave, async (req, res) => {
   try {
     const { clave, valor, auditor } = req.body || {};
     if (!CLAVES_CONFIG.includes(clave)) return res.status(400).json({ error: 'Interruptor no válido.' });
-    await db.guardarConfig(clave, Boolean(valor), auditor);
+    // metas_cierre = { "OUT Hogar": 20, "Recuperación": 40 } · los demás son interruptores Sí/No
+    const v = clave === 'metas_cierre' ? Object.fromEntries(Object.entries(valor || {}).filter(([k, n]) => String(k).trim() && Number(n) >= 0).map(([k, n]) => [String(k).trim().slice(0, 60), Math.round(Number(n))])) : Boolean(valor);
+    await db.guardarConfig(clave, v, auditor);
     await refrescarConfig(true);
     res.json({ ok: true, config: CONFIG.datos });
   } catch (err) {
@@ -2038,7 +2040,7 @@ app.get('/api/panel/bases', exigirClave, async (req, res) => {
     try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('bases asesores:', e.message); }
     // Ventas registradas en Marce ese día (para cuadrar contra las ventas tipificadas en OCM)
     let ventasDia = [];
-    try { ventasDia = (await db.ventasDelDia(dia)).map((v) => ({ tels: partes(v.telefono), asesor: v.asesor, cliente: v.nombre_cliente, ot: v.numero_ot, tipo: v.tipo_venta || v.datos?.tipo_venta || '' })); } catch (e) { console.error('bases ventasDia:', e.message); }
+    try { ventasDia = (await db.ventasDelDia(dia)).map((v) => ({ tels: partes(v.telefono), hora: v.created_at ? new Date(Date.parse(v.created_at) - 5 * 3600 * 1000).toISOString().slice(11, 13) : '', asesor: v.asesor, cliente: v.nombre_cliente, ot: v.numero_ot, tipo: v.tipo_venta || v.datos?.tipo_venta || '' })); } catch (e) { console.error('bases ventasDia:', e.message); }
     res.json({ dias, ocmDias, dia, bases, asesores, ventasDia, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, actualizado: o.actualizado, marcados: o.marcados || '', filas: o.filas || [], cubo: o.cubo || [] })), cruce });
   } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
 });
