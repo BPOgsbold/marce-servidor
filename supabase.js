@@ -686,6 +686,13 @@ async function borrarBaseDia(dia, archivo) {
   const { error } = await q;
   if (error) throw error;
 }
+async function interesadosDelDia(fecha) {
+  const desde = new Date(`${fecha}T00:00:00-05:00`).toISOString();
+  const hasta = new Date(new Date(desde).getTime() + 86400000).toISOString();
+  const { data, error } = await getClient().from('interesados').select('id, telefono, asesor, resultado').gte('created_at', desde).lt('created_at', hasta).limit(5000);
+  if (error) throw error;
+  return data || [];
+}
 async function diasOcm() {
   const { data, error } = await getClient().from('marce_ocm_dia').select('dia, campana, total, actualizado').order('dia', { ascending: false }).limit(120);
   if (error) throw error;
@@ -823,7 +830,7 @@ module.exports = {
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
   guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos,
-  guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia, diasOcm,
+  guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia, diasOcm, interesadosDelDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
   auditarCobertura,
