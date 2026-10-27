@@ -2036,7 +2036,10 @@ app.get('/api/panel/bases', exigirClave, async (req, res) => {
     }
     const asesores = {};
     try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('bases asesores:', e.message); }
-    res.json({ dias, ocmDias, dia, bases, asesores, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, actualizado: o.actualizado, marcados: o.marcados || '', filas: o.filas || [], cubo: o.cubo || [] })), cruce });
+    // Ventas registradas en Marce ese día (para cuadrar contra las ventas tipificadas en OCM)
+    let ventasDia = [];
+    try { ventasDia = (await db.ventasDelDia(dia)).map((v) => ({ tels: partes(v.telefono), asesor: v.asesor, cliente: v.nombre_cliente, ot: v.numero_ot, tipo: v.tipo_venta || v.datos?.tipo_venta || '' })); } catch (e) { console.error('bases ventasDia:', e.message); }
+    res.json({ dias, ocmDias, dia, bases, asesores, ventasDia, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, actualizado: o.actualizado, marcados: o.marcados || '', filas: o.filas || [], cubo: o.cubo || [] })), cruce });
   } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
 });
 
