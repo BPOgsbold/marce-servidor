@@ -2025,13 +2025,16 @@ app.get('/api/panel/bases', exigirClave, async (req, res) => {
     const marce = tels.size ? await db.marcePorTelefonos([...tels]) : { interesados: [], ventas: [] };
     const cruce = {};
     const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
-    for (const i of marce.interesados) for (const n of partes(i.telefono)) (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }).int += 1;
+    // "En Marce" = el asesor dejó registrado (interesado o venta) ese celular entre 30 días antes y el día siguiente
+    const enVentana = (iso) => { if (!iso) return false; const d = new Date(Date.parse(iso) - 5 * 3600 * 1000).toISOString().slice(0, 10); const ini = new Date(Date.parse(dia + 'T12:00:00Z') - 30 * 864e5).toISOString().slice(0, 10); const fin = new Date(Date.parse(dia + 'T12:00:00Z') + 864e5).toISOString().slice(0, 10); return d >= ini && d <= fin; };
+    for (const i of marce.interesados) for (const n of partes(i.telefono)) { const c = (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }); c.int += 1; if (enVentana(i.created_at)) c.marce = 1; }
     // Solo cuenta como venta del día la que se registró ESE día (hora Colombia). Las de otros días (por ejemplo,
     // la venta original de un cliente de Recuperación) se reportan aparte para no inflar el cierre.
     const diaCO = (iso) => new Date(Date.parse(iso) - 5 * 3600 * 1000).toISOString().slice(0, 10);
     for (const v of marce.ventas) for (const n of partes(v.telefono)) {
       const c = (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0, ventaAntes: 0, ventaDespues: 0 });
       const vd = v.created_at ? diaCO(v.created_at) : '';
+      if (enVentana(v.created_at)) c.marce = 1;
       if (vd === dia) { c.venta += 1; if (v.fecha_agenda) c.agenda += 1; if (v.estado_instalacion === 'instalada' || v.torre_salida === 'instalado') c.inst += 1; }
       else if (vd && vd < dia) c.ventaAntes += 1;
       else c.ventaDespues += 1;
