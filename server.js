@@ -2024,7 +2024,16 @@ app.get('/api/panel/bases', exigirClave, async (req, res) => {
     const cruce = {};
     const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
     for (const i of marce.interesados) for (const n of partes(i.telefono)) (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }).int += 1;
-    for (const v of marce.ventas) for (const n of partes(v.telefono)) { const c = (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }); c.venta += 1; if (v.fecha_agenda) c.agenda += 1; if (v.estado_instalacion === 'instalada' || v.torre_salida === 'instalado') c.inst += 1; }
+    // Solo cuenta como venta del día la que se registró ESE día (hora Colombia). Las de otros días (por ejemplo,
+    // la venta original de un cliente de Recuperación) se reportan aparte para no inflar el cierre.
+    const diaCO = (iso) => new Date(Date.parse(iso) - 5 * 3600 * 1000).toISOString().slice(0, 10);
+    for (const v of marce.ventas) for (const n of partes(v.telefono)) {
+      const c = (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0, ventaAntes: 0, ventaDespues: 0 });
+      const vd = v.created_at ? diaCO(v.created_at) : '';
+      if (vd === dia) { c.venta += 1; if (v.fecha_agenda) c.agenda += 1; if (v.estado_instalacion === 'instalada' || v.torre_salida === 'instalado') c.inst += 1; }
+      else if (vd && vd < dia) c.ventaAntes += 1;
+      else c.ventaDespues += 1;
+    }
     const asesores = {};
     try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('bases asesores:', e.message); }
     res.json({ dias, ocmDias, dia, bases, asesores, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, actualizado: o.actualizado, marcados: o.marcados || '', filas: o.filas || [], cubo: o.cubo || [] })), cruce });
