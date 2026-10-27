@@ -686,6 +686,11 @@ async function borrarBaseDia(dia, archivo) {
   const { error } = await q;
   if (error) throw error;
 }
+async function diasOcm() {
+  const { data, error } = await getClient().from('marce_ocm_dia').select('dia, campana, total, actualizado').order('dia', { ascending: false }).limit(120);
+  if (error) throw error;
+  return data || [];
+}
 async function leerOcmDia(dia) {
   const { data, error } = await getClient().from('marce_ocm_dia').select('*').eq('dia', dia);
   if (error) throw error;
@@ -818,7 +823,7 @@ module.exports = {
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
   guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos,
-  guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia,
+  guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia, diasOcm,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
   auditarCobertura,

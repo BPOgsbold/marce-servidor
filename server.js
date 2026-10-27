@@ -2010,8 +2010,9 @@ app.get('/api/panel/bases', exigirClave, async (req, res) => {
     const resumenDias = {};
     for (const b of todos) { const d = (resumenDias[b.dia] = resumenDias[b.dia] || { dia: b.dia, archivos: 0, total: 0, fuentes: [] }); d.archivos += 1; d.total += b.total || 0; if (b.fuente && !d.fuentes.includes(b.fuente)) d.fuentes.push(b.fuente); }
     const dias = Object.values(resumenDias).sort((a, b) => (a.dia < b.dia ? 1 : -1));
+    const ocmDias = await db.diasOcm().catch(() => []);
     const dia = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dia || '') ? req.query.dia : dias[0]?.dia;
-    if (!dia) return res.json({ dias, dia: null, bases: [], ocm: [], cruce: {} });
+    if (!dia) return res.json({ dias, ocmDias, dia: null, bases: [], ocm: [], cruce: {} });
     const [bases, ocm] = await Promise.all([db.leerBasesDia(dia), db.leerOcmDia(dia).catch(() => [])]);
     // Interesados (nivel ≥ 5) del marcador: se buscan en Marce para saber si hubo venta e instalación
     const tels = new Set();
@@ -2024,7 +2025,9 @@ app.get('/api/panel/bases', exigirClave, async (req, res) => {
     const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
     for (const i of marce.interesados) for (const n of partes(i.telefono)) (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }).int += 1;
     for (const v of marce.ventas) for (const n of partes(v.telefono)) { const c = (cruce[n] = cruce[n] || { int: 0, venta: 0, agenda: 0, inst: 0 }); c.venta += 1; if (v.fecha_agenda) c.agenda += 1; if (v.estado_instalacion === 'instalada' || v.torre_salida === 'instalado') c.inst += 1; }
-    res.json({ dias, dia, bases, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, marcados: o.marcados || '', filas: o.filas || [] })), cruce });
+    const asesores = {};
+    try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('bases asesores:', e.message); }
+    res.json({ dias, ocmDias, dia, bases, asesores, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, actualizado: o.actualizado, marcados: o.marcados || '', filas: o.filas || [], cubo: o.cubo || [] })), cruce });
   } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
 });
 
