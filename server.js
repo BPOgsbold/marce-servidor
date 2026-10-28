@@ -1578,7 +1578,7 @@ const PERFILES = {
 const SECRETO = () => process.env.PANEL_SECRETO || process.env.PANEL_CLAVE || 'marce';
 const b64 = (s) => Buffer.from(s).toString('base64url');
 function firmarToken(u) {
-  const cuerpo = b64(JSON.stringify({ u: u.usuario, n: u.nombre, p: u.perfil, exp: Date.now() + 14 * 3600 * 1000 }));
+  const cuerpo = b64(JSON.stringify({ u: u.usuario, n: u.nombre, p: u.perfil, exp: Date.now() + 7 * 24 * 3600 * 1000 })); // la sesión dura 7 días
   return cuerpo + '.' + crypto.createHmac('sha256', SECRETO()).update(cuerpo).digest('base64url');
 }
 function leerToken(t) {
