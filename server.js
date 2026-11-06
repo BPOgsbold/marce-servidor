@@ -10,12 +10,44 @@ const { responderAyuda, iaDisponible } = require('./claude');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '6mb' }));
+// ⚡ Velocidad del panel: respuestas JSON grandes comprimidas (gzip) y caché corta en memoria
+const zlib = require('zlib');
+const CACHE = new Map();
+app.use((req, res, next) => {
+  const orig = res.json.bind(res);
+  res.json = (obj) => {
+    const txt = JSON.stringify(obj);
+    if (txt.length < 30000 || !/gzip/.test(req.headers['accept-encoding'] || '')) return orig(obj);
+    zlib.gzip(txt, { level: 6 }, (err, buf) => {
+      if (err) { res.set('Content-Type', 'application/json; charset=utf-8'); return res.send(txt); }
+      if (res.locals.guardarCache && res.statusCode === 200) res.locals.guardarCache(buf);
+      res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+      res.send(buf);
+    });
+    return res;
+  };
+  next();
+});
+// Cualquier cambio desde el panel (subir OCM, bases, editar ventas…) borra la caché; el chat de los asesores no, para no anularla
+app.use((req, res, next) => { if (req.method !== 'GET' && req.path.startsWith('/api/panel/')) CACHE.clear(); next(); });
+// Guarda la respuesta comprimida unos segundos: si otro usuario (o el mismo) pide lo mismo, sale al instante
+const cachear = (ms) => (req, res, next) => {
+  if (req.query.fresco) return next();
+  const k = req.path + '?' + Object.entries(req.query).sort().map(([a, b]) => a + '=' + b).join('&');
+  const c = CACHE.get(k);
+  if (c && Date.now() - c.t < ms && /gzip/.test(req.headers['accept-encoding'] || '')) {
+    res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding', 'X-Cache': 'hit' });
+    return res.send(c.buf);
+  }
+  res.locals.guardarCache = (buf) => { CACHE.set(k, { t: Date.now(), buf }); while (CACHE.size > 40) CACHE.delete(CACHE.keys().next().value); };
+  next();
+};
 // Registro de peticiones en los logs de Render (para diagnosticar errores de los asesores)
 app.use((req, res, next) => {
   if (req.path === '/api/health') return next();
   const t = Date.now();
   res.on('finish', () => {
-    if (req.path === '/api/chat' || res.statusCode >= 400) {
+    if (req.path === '/api/chat' || res.statusCode >= 400 || Date.now() - t > 4000) {
       console.log(`[peticion] ${req.method} ${req.path} → ${res.statusCode} · ${Date.now() - t} ms · ${String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0]} · ${req.body?.cedula ? 'cc ' + String(req.body.cedula).slice(-4) : req.body?.asesor || ''}`);
     }
   });
@@ -1466,7 +1498,8 @@ async function manejar(sesion, asesor, texto) {
 // ---------------------------------------------------------------------------
 // Rutas
 // ---------------------------------------------------------------------------
-app.get('/api/health', (req, res) => res.json({ ok: true, ia: iaDisponible() }));
+// Diagnóstico: minutos encendido y memoria en MB (si 'encendido' vuelve a 0 sin deploy, Render reinició el servidor)
+app.get('/api/health', (req, res) => { const m = process.memoryUsage(); res.json({ ok: true, ia: iaDisponible(), encendidoMin: Math.round(process.uptime() / 60), memoriaMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576) }); });
 
 // Pestañas de la ventana: "Volver a llamar" y "Escalamientos" del asesor.
 // La extensión valida la cédula del asesor y recibe su nombre oficial.
@@ -1740,7 +1773,7 @@ app.get('/api/panel/historial', exigirClave, async (req, res) => {
   }
 });
 
-app.get('/api/panel/datos', exigirClave, async (req, res) => {
+app.get('/api/panel/datos', exigirClave, cachear(30000), async (req, res) => {
   try {
     const hoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
     const desde = isoColombia(req.query.desde || hoy, false);
@@ -1758,7 +1791,7 @@ app.get('/api/panel/datos', exigirClave, async (req, res) => {
 });
 
 // Agenda del día y "¿Cómo vamos hoy?": ventas agendadas para la fecha y ventas registradas ese día.
-app.get('/api/panel/hoy', exigirClave, async (req, res) => {
+app.get('/api/panel/hoy', exigirClave, cachear(30000), async (req, res) => {
   try {
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : hoyCO();
     const [agenda, ventas, gestionadas] = await Promise.all([db.agendaDelDia(fecha), db.ventasDelDia(fecha), db.ventasGestionadasDia(fecha).catch(() => [])]);
@@ -1958,6 +1991,53 @@ app.post('/api/panel/ocm', exigirClave, async (req, res) => {
     }
   } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
 });
+// ---------- 📈 Histórico del embudo ----------
+// Resumen pequeño por día y campaña (se calcula una vez y queda guardado): así el histórico completo carga en segundos.
+// L = teléfonos únicos que llegaron a cada etapa (0 marcado … 6 venta OCM) · cubo = llamadas por canal, asesor y etapa
+// vm = ventas de Marce registradas ese día de teléfonos del marcador [canal, asesor] · ints = interesados [canal, asesor, en Marce 1/0]
+async function calcularResumenOcm(f) {
+  const nv = new Map();
+  for (const p of String(f.marcados || '').split(',')) { const [t, n0] = p.split(':'); if (!t) continue; const n = Math.min(+n0 || 0, 6); if (!(nv.get(t) >= n)) nv.set(t, n); }
+  const info = new Map();
+  for (const x of f.filas || []) { const n = Math.min(x[6], 6); if (!(nv.get(x[0]) >= n)) nv.set(x[0], n); const pr = info.get(x[0]); if (!pr || x[6] > pr.n) info.set(x[0], { c: x[2] || '', a: x[5] || '', n: x[6] }); }
+  const L = [0, 0, 0, 0, 0, 0, 0];
+  for (const n of nv.values()) for (let k = 0; k <= n; k++) L[k] += 1;
+  const cub = new Map();
+  for (const c of f.cubo || []) { const k = [c[0] || '', c[2] || '', Math.min(c[4], 6)].join('\u0001'); cub.set(k, (cub.get(k) || 0) + (c[5] || 0)); }
+  const cubo = [...cub.entries()].map(([k, n]) => { const p = k.split('\u0001'); return [p[0], p[1], +p[2], n]; });
+  const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
+  const vm = [];
+  for (const v of await db.ventasCreadasEntre(isoColombia(f.dia, false), isoColombia(f.dia, true))) {
+    const t = partes(v.telefono).find((x) => nv.has(x)); if (!t) continue;
+    const x = info.get(t) || {}; vm.push([x.c || '', x.a || '']);
+  }
+  const intsTel = [...nv.entries()].filter(([, n]) => n >= 5).map(([t]) => t);
+  const ini = sumarDias(f.dia, -30), fin = sumarDias(f.dia, 1);
+  const marce = intsTel.length ? await db.marcePorTelefonos(intsTel) : { interesados: [], ventas: [] };
+  const conReg = new Set();
+  for (const r of [...marce.interesados, ...marce.ventas]) { const d = new Date(Date.parse(r.created_at) - 5 * 3600e3).toISOString().slice(0, 10); if (d >= ini && d <= fin) for (const t of partes(r.telefono)) conReg.add(t); }
+  const ints = intsTel.map((t) => { const x = info.get(t) || {}; return [x.c || '', x.a || '', conReg.has(t) ? 1 : 0]; });
+  return { v: 1, L, cubo, vm, ints, calc: new Date().toISOString() };
+}
+app.get('/api/panel/ocm/historico', exigirClave, cachear(300000), async (req, res) => {
+  try {
+    const hasta = /^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta || '') ? req.query.hasta : hoyCO();
+    const filas = await db.leerOcmResumenes(hasta);
+    // Se recalcula si no tiene resumen o si se calculó antes de cerrar el día siguiente (los asesores aún pueden registrar en Marce)
+    const pend = filas.filter((f) => !f.resumen || String(f.resumen.calc || '') < sumarDias(f.dia, 2));
+    const t0 = Date.now(); let hechos = 0;
+    for (const f of pend) {
+      if (Date.now() - t0 > 20000) break;
+      try { f.resumen = await calcularResumenOcm(await db.leerOcmFila(f.dia, f.campana)); await db.guardarOcmResumen(f.dia, f.campana, f.resumen); hechos += 1; }
+      catch (e) { console.error('resumen OCM', f.dia, f.campana, e.message); hechos += 1; }
+    }
+    const pendientes = pend.length - hechos;
+    if (pendientes > 0) res.locals.guardarCache = null; // no guardar en caché una respuesta incompleta
+    res.json({ dias: filas.filter((f) => f.resumen).map((f) => ({ dia: f.dia, campana: f.campana, total: f.total, r: f.resumen })), pendientes });
+  } catch (err) {
+    res.status(500).json({ error: /resumen/.test(err.message) ? 'Falta correr supabase_ocm_resumen.sql en Supabase.' : ERR_OCM(err) });
+  }
+});
 app.post('/api/panel/ocm/borrar', exigirClave, async (req, res) => {
   try {
     const { dia, campana } = req.body || {};
@@ -1967,7 +2047,7 @@ app.post('/api/panel/ocm/borrar', exigirClave, async (req, res) => {
   } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
 });
 // Lee los días cargados y cruza cada interesado de OCM con Marce por celular
-app.get('/api/panel/ocm', exigirClave, async (req, res) => {
+app.get('/api/panel/ocm', exigirClave, cachear(180000), async (req, res) => {
   try {
     const { desde, hasta } = req.query;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(desde || '') || !/^\d{4}-\d{2}-\d{2}$/.test(hasta || '')) return res.status(400).json({ error: 'Fechas inválidas.' });
@@ -2006,7 +2086,7 @@ app.post('/api/panel/bases/borrar', exigirClave, async (req, res) => {
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: ERR_BASES(err) }); }
 });
-app.get('/api/panel/bases', exigirClave, async (req, res) => {
+app.get('/api/panel/bases', exigirClave, cachear(120000), async (req, res) => {
   try {
     const todos = await db.diasBases();
     const resumenDias = {};

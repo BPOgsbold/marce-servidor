@@ -633,9 +633,38 @@ async function guardarCampanaDia(fecha, asesor, campana, por) {
 
 // ---------- 📉 Embudo de gestión: base diaria del marcador OCM ----------
 async function guardarOcmDia(fila) {
-  const { data, error } = await getClient().from('marce_ocm_dia').upsert({ ...fila, actualizado: new Date().toISOString() }).select('dia, campana, archivo, cargado_por, actualizado').single();
+  // Al volver a subir un día se borra su resumen histórico para recalcularlo (si la columna aún no existe, se guarda sin ella)
+  const subir = (f) => getClient().from('marce_ocm_dia').upsert({ ...f, actualizado: new Date().toISOString() }).select('dia, campana, archivo, cargado_por, actualizado').single();
+  let { data, error } = await subir({ ...fila, resumen: null });
+  if (error && /resumen/.test(error.message)) ({ data, error } = await subir(fila));
   if (error) throw error;
   return data;
+}
+// ---------- Histórico del embudo: un resumen pequeño por día y campaña ----------
+async function leerOcmResumenes(hasta) {
+  const { data, error } = await getClient().from('marce_ocm_dia').select('dia, campana, total, resumen').lte('dia', hasta).order('dia').limit(2000);
+  if (error) throw error;
+  return data || [];
+}
+async function leerOcmFila(dia, campana) {
+  const { data, error } = await getClient().from('marce_ocm_dia').select('*').eq('dia', dia).eq('campana', campana || '').single();
+  if (error) throw error;
+  return data;
+}
+async function guardarOcmResumen(dia, campana, resumen) {
+  const { error } = await getClient().from('marce_ocm_dia').update({ resumen }).eq('dia', dia).eq('campana', campana || '');
+  if (error) throw error;
+}
+// Ventas registradas en Marce entre dos instantes (solo id, celular y fecha)
+async function ventasCreadasEntre(desde, hasta) {
+  let filas = [];
+  for (let i = 0; i < 20000; i += 1000) {
+    const { data, error } = await getClient().from('ventas').select('id, telefono, created_at').gte('created_at', desde).lt('created_at', hasta).range(i, i + 999);
+    if (error) throw error;
+    filas = filas.concat(data || []);
+    if (!data || data.length < 1000) break;
+  }
+  return filas;
 }
 async function leerOcmDias(desde, hasta) {
   const { data, error } = await getClient().from('marce_ocm_dia').select('*').gte('dia', desde).lte('dia', hasta).order('dia').limit(400);
@@ -829,7 +858,7 @@ module.exports = {
   ventasGestionadasDia,
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
-  guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos,
+  guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos, leerOcmResumenes, leerOcmFila, guardarOcmResumen, ventasCreadasEntre,
   guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia, diasOcm, interesadosDelDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,
