@@ -932,6 +932,9 @@ async function accionBaseAsesor(accion, { cedula, lote, aCedula, aNombre }) {
   if (accion === 'reciclar') q = c.from(BA).update({ estado: 'pendiente', tomado_at: null }).eq('cedula', cedula).eq('estado', 'no_contesto');
   else if (accion === 'liberar') q = c.from(BA).update({ estado: 'pendiente', tomado_at: null }).eq('cedula', cedula).eq('estado', 'en_gestion');
   else if (accion === 'quitar') q = c.from(BA).delete().eq('cedula', cedula).eq('estado', 'pendiente');
+  // Quitarle la base a un asesor: lo que no ha gestionado vuelve a la base sin entregar (no se borra)
+  else if (accion === 'eliminar_bolsa') q = c.from(BA).delete().eq('cedula', 'BOLSA').eq('estado', 'sin_asignar'); // borra una base sin entregar (por lote)
+  else if (accion === 'devolver') q = c.from(BA).update({ cedula: 'BOLSA', asesor: null, estado: 'sin_asignar', tomado_at: null }).eq('cedula', cedula).in('estado', ['pendiente', 'en_gestion']);
   else if (accion === 'reasignar') q = c.from(BA).update({ cedula: aCedula, asesor: aNombre || null }).eq('cedula', cedula).in('estado', ['pendiente', 'en_gestion']);
   else throw new Error('Acción no válida');
   if (lote) q = q.eq('lote', lote);
@@ -940,7 +943,31 @@ async function accionBaseAsesor(accion, { cedula, lote, aCedula, aNombre }) {
   return (data || []).length;
 }
 
+// Entrega N clientes de la base sin entregar (en el orden en que se cargaron) a un asesor
+async function entregarBolsaBase(cedula, nombre, n, lote) {
+  const c = getClient();
+  const ids = [];
+  const quiero = Math.min(n, 20000);
+  for (let desde = 0; ids.length < quiero; desde += 1000) { // Supabase devuelve máximo 1.000 filas por consulta
+    let q = c.from(BA).select('id').eq('cedula', 'BOLSA').eq('estado', 'sin_asignar').order('id').range(desde, desde + Math.min(999, quiero - ids.length - 1));
+    if (lote) q = q.eq('lote', lote);
+    const { data, error } = await q;
+    if (error) throw error;
+    ids.push(...(data || []).map((x) => x.id));
+    if (!data || data.length < 1000) break;
+  }
+  let total = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    const { data: up, error: e2 } = await c.from(BA).update({ cedula, asesor: nombre || null, estado: 'pendiente', tomado_at: null })
+      .in('id', ids.slice(i, i + 500)).eq('estado', 'sin_asignar').select('id');
+    if (e2) throw e2;
+    total += (up || []).length;
+  }
+  return total;
+}
+
 module.exports = {
+  entregarBolsaBase,
   insertarBaseAsesor, tomarBaseAsesor, leerBaseAsesorCampos, seguimientosBaseAsesor, gestionadosBaseAsesor, guardarResultadoBase, leerFilaBase, detalleBaseAsesor, accionBaseAsesor,
   marcarInteresadosVenta,
   mapaInteresadosPorCelular, interesadoDeVenta, enlazarVentasImportadas,

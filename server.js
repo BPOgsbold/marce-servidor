@@ -1996,6 +1996,7 @@ app.post('/api/panel/ocm', exigirClave, async (req, res) => {
 // ---------- 👤 Base por asesor: el admin asigna clientes por cédula; el asesor los gestiona de a 2 ----------
 const ERR_BA = (err) => (/marce_base_asesor/.test(err.message) ? 'Falta correr supabase_base_asesor.sql en Supabase.' : err.message);
 const MAX_A_LA_VEZ = 2;
+const BOLSA_BA = 'BOLSA'; // base cargada que todavía no se le ha entregado a ningún asesor
 const corteBA = (f) => ({
   id: f.id, lote: f.lote, estado: f.estado, datos: f.datos || {}, telefono: f.telefono, cargado: f.cargado,
   contesto: f.contesto, efectivo: f.efectivo, util: f.util, interesado: f.interesado, venta: f.venta,
@@ -2063,11 +2064,13 @@ app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
     if (!Array.isArray(asignaciones) || !asignaciones.length) return res.status(400).json({ error: 'No hay filas para cargar.' });
     const filas = []; const resumen = [];
     for (const a of asignaciones) {
-      const fila = await resolverAsesor(a.cedula);
+      // "BOLSA" = base sin entregar: queda guardada y desde el panel se le entrega a quien se quiera
+      const bolsa = String(a.cedula) === BOLSA_BA;
+      const fila = bolsa ? { cedula: BOLSA_BA, nombre: null } : await resolverAsesor(a.cedula);
       if (!fila) return res.status(400).json({ error: `La cédula ${a.cedula} no está registrada en Asesores.` });
       (a.filas || []).forEach((d, i) => {
         const tels = (Array.isArray(d.telefonos) ? d.telefonos : []).map((t) => soloDigitos(t)).filter((t) => t.length >= 7);
-        filas.push({ cedula: String(fila.cedula), asesor: fila.nombre, lote: String(lote || '').slice(0, 200) || null, cargado_por: req.usuario?.nombre || null, orden: i, telefono: tels[0] || null, datos: { ...d, telefonos: tels } });
+        filas.push({ cedula: String(fila.cedula), asesor: fila.nombre, lote: String(lote || '').slice(0, 200) || null, cargado_por: req.usuario?.nombre || null, orden: i, telefono: tels[0] || null, estado: bolsa ? 'sin_asignar' : 'pendiente', datos: { ...d, telefonos: tels } });
       });
       resumen.push({ cedula: fila.cedula, asesor: fila.nombre, n: (a.filas || []).length });
     }
@@ -2083,7 +2086,9 @@ app.get('/api/panel/base-asesor', exigirClave, async (req, res) => {
     const hoyIni = isoColombia(hoyCO(), false);
     const nuevo = () => ({ total: 0, pendientes: 0, enGestion: 0, gestionados: 0, noContesto: 0, contesto: 0, efectivos: 0, utiles: 0, interesados: 0, ventas: 0, seguimiento: 0, hoy: 0, ultima: null, cargado: null });
     const porCed = {}, porLote = {};
+    const bolsa = { total: 0, lotes: {} };
     for (const f of filas) {
+      if (f.cedula === BOLSA_BA) { if (f.estado === 'sin_asignar') { bolsa.total += 1; bolsa.lotes[f.lote || 'Sin nombre'] = (bolsa.lotes[f.lote || 'Sin nombre'] || 0) + 1; } continue; }
       for (const [m, k] of [[porCed, f.cedula], [porLote, (f.lote || 'Sin nombre') + '\u0001' + f.cedula]]) {
         const x = (m[k] ??= { ...nuevo(), cedula: f.cedula, asesor: f.asesor, lote: f.lote });
         x.total += 1;
@@ -2096,7 +2101,7 @@ app.get('/api/panel/base-asesor', exigirClave, async (req, res) => {
         if (f.cargado && (!x.cargado || f.cargado > x.cargado)) x.cargado = f.cargado;
       }
     }
-    res.json({ asesores: Object.values(porCed), lotes: Object.values(porLote) });
+    res.json({ asesores: Object.values(porCed), lotes: Object.values(porLote), bolsa: { total: bolsa.total, lotes: Object.entries(bolsa.lotes).map(([lote, n]) => ({ lote, n })) } });
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
 app.get('/api/panel/base-asesor/detalle', exigirClave, async (req, res) => {
@@ -2109,6 +2114,11 @@ app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
     if (!cedula) return res.status(400).json({ error: 'Falta la cédula.' });
     let aNombre = null;
     if (accion === 'reasignar') { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; }
+    if (accion === 'entregar') { // de la base sin entregar a un asesor: { cedula: destino, n, lote? }
+      const f = await resolverAsesor(cedula); if (!f) return res.status(400).json({ error: 'Esa cédula no está en Asesores.' });
+      const n = Math.max(0, Math.floor(Number(req.body.n) || 0)); if (!n) return res.status(400).json({ error: 'Indica cuántos clientes entregar.' });
+      return res.json({ ok: true, n: await db.entregarBolsaBase(String(f.cedula), f.nombre, n, lote || null) });
+    }
     res.json({ ok: true, n: await db.accionBaseAsesor(accion, { cedula: String(cedula), lote: lote || null, aCedula: String(aCedula || ''), aNombre }) });
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
