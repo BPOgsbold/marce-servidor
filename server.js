@@ -2077,8 +2077,11 @@ app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
       resumen.push({ cedula: fila.cedula, asesor: fila.nombre, n: (a.filas || []).length });
     }
     if (filas.length > 20000) return res.status(400).json({ error: 'Máximo 20.000 clientes por carga.' });
-    const n = await db.insertarBaseAsesor(filas);
-    res.json({ ok: true, cargados: n, resumen });
+    // No se vuelve a cargar un cliente (mismo celular y OT) que ya está pendiente en alguna base
+    const ya = new Set((await db.leerBaseAsesorCampos(null, 'telefono, datos, estado')).filter((f) => ['pendiente', 'en_gestion'].includes(f.estado)).map((f) => (f.telefono || '') + '|' + (f.datos?.ot || f.datos?.cuenta || '')));
+    const nuevas = filas.filter((f) => { const k = (f.telefono || '') + '|' + (f.datos?.ot || f.datos?.cuenta || ''); if (!f.telefono || ya.has(k)) return !f.telefono; ya.add(k); return true; });
+    const n = nuevas.length ? await db.insertarBaseAsesor(nuevas) : 0;
+    res.json({ ok: true, cargados: n, repetidos: filas.length - nuevas.length, resumen });
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
 // Admin: consumo y resultados por cédula y por lote
@@ -2115,6 +2118,17 @@ app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
     let aNombre = null;
     if (accion === 'reasignar' || accion === 'asignar') { if (aCedula === 'BOLSA') aNombre = '📦 Bolsa sin asignar'; else { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; } }
     if (accion === 'asignar') return res.json({ ok: true, n: await db.asignarDeBolsa(cantidad, String(aCedula), aNombre, lote || null) });
+    // Quita los clientes repetidos (mismo celular y misma OT) que aún no se han gestionado; deja el primero que se cargó
+    if (accion === 'duplicados') {
+      const filas = await db.leerBaseAsesorCampos(null, 'id, telefono, datos, estado');
+      const vistos = new Set(), borrar = [];
+      for (const f of filas.sort((x, y) => x.id - y.id)) {
+        const k = (f.telefono || '') + '|' + (f.datos?.ot || f.datos?.cuenta || '');
+        if (!f.telefono) continue;
+        if (vistos.has(k) && ['pendiente', 'en_gestion'].includes(f.estado)) borrar.push(f.id); else vistos.add(k);
+      }
+      return res.json({ ok: true, n: borrar.length ? await db.borrarIdsBase(borrar) : 0 });
+    }
     res.json({ ok: true, n: await db.accionBaseAsesor(accion, { cedula: String(cedula), lote: lote || null, aCedula: String(aCedula || ''), aNombre }) });
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });

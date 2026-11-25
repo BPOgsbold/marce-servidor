@@ -926,6 +926,15 @@ async function detalleBaseAsesor(cedula, lote) {
   }
   return filas;
 }
+async function borrarIdsBase(ids) {
+  let n = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    const { data, error } = await getClient().from(BA).delete().in('id', ids.slice(i, i + 500)).in('estado', ['pendiente', 'en_gestion']).select('id');
+    if (error) throw error;
+    n += (data || []).length;
+  }
+  return n;
+}
 // Pasa N clientes de la bolsa (sin asignar) a una cédula, en el orden en que se cargaron
 async function asignarDeBolsa(cantidad, aCedula, aNombre, lote) {
   const c = getClient();
@@ -957,7 +966,7 @@ async function accionBaseAsesor(accion, { cedula, lote, aCedula, aNombre }) {
 }
 
 module.exports = {
-  insertarBaseAsesor, asignarDeBolsa, tomarBaseAsesor, leerBaseAsesorCampos, seguimientosBaseAsesor, gestionadosBaseAsesor, guardarResultadoBase, leerFilaBase, detalleBaseAsesor, accionBaseAsesor,
+  insertarBaseAsesor, asignarDeBolsa, borrarIdsBase, tomarBaseAsesor, leerBaseAsesorCampos, seguimientosBaseAsesor, gestionadosBaseAsesor, guardarResultadoBase, leerFilaBase, detalleBaseAsesor, accionBaseAsesor,
   marcarInteresadosVenta,
   mapaInteresadosPorCelular, interesadoDeVenta, enlazarVentasImportadas,
   obtenerClienteOVenta,
