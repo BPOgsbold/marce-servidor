@@ -1662,7 +1662,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
-  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/bases': ['administrar'], '/api/panel/bases/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/base-asesor/cargar': ['administrar'], '/api/panel/base-asesor/accion': ['administrar'], '/api/panel/bases': ['administrar'], '/api/panel/bases/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -1680,6 +1680,7 @@ app.use('/api/panel', (req, res, next) => {
         if (Array.isArray(b.asesores)) b.asesores = `${b.asesores.length} asesores`;
         if (Array.isArray(b.filas)) b.filas = `${b.filas.length} filas`;
         if (Array.isArray(b.cubo)) b.cubo = `${b.cubo.length} grupos`;
+        if (Array.isArray(b.asignaciones)) b.asignaciones = b.asignaciones.map((x) => `${x.cedula}: ${(x.filas || []).length}`).join(' · ');
         for (const k of ['tels', 'marcados', 'resumen']) if (b[k]) b[k] = '(omitido)';
         db.registrarHistorial({ usuario: req.usuario.usuario, nombre: req.usuario.nombre, perfil: req.usuario.perfil, accion: ruta.replace(/^\//, ''),
           registro: String(b.id || b.venta_id || b.interesado_id || b.cedula || b.clave || b.usuario || b.de || ''), detalle: req._cambio ? { ...b, _cambio: req._cambio } : b }).catch((e) => console.error('Historial:', e.message));
@@ -1991,6 +1992,127 @@ app.post('/api/panel/ocm', exigirClave, async (req, res) => {
     }
   } catch (err) { res.status(500).json({ error: ERR_OCM(err) }); }
 });
+
+// ---------- 👤 Base por asesor: el admin asigna clientes por cédula; el asesor los gestiona de a 2 ----------
+const ERR_BA = (err) => (/marce_base_asesor/.test(err.message) ? 'Falta correr supabase_base_asesor.sql en Supabase.' : err.message);
+const MAX_A_LA_VEZ = 2;
+const corteBA = (f) => ({
+  id: f.id, lote: f.lote, estado: f.estado, datos: f.datos || {}, telefono: f.telefono, cargado: f.cargado,
+  contesto: f.contesto, efectivo: f.efectivo, util: f.util, interesado: f.interesado, venta: f.venta,
+  resultado: f.resultado, seguimiento_fecha: f.seguimiento_fecha, nota: f.nota, intentos: f.intentos, gestionado_at: f.gestionado_at,
+});
+async function datosMiBase(fila) {
+  const ced = String(fila.cedula);
+  const [actuales, conteo, seg, hoyL] = await Promise.all([
+    db.tomarBaseAsesor(ced, MAX_A_LA_VEZ),
+    db.leerBaseAsesorCampos(ced, 'estado, contesto, interesado, venta, gestionado_at'),
+    db.seguimientosBaseAsesor(ced),
+    db.gestionadosBaseAsesor(ced, isoColombia(hoyCO(), false)),
+  ]);
+  const hoyIni = isoColombia(hoyCO(), false);
+  const r = { total: conteo.length, pendientes: 0, enGestion: 0, gestionados: 0, seguimiento: 0, hoy: 0, hoyContesto: 0, hoyInteresados: 0, hoyVentas: 0 };
+  for (const x of conteo) {
+    if (x.estado === 'pendiente') r.pendientes += 1; else if (x.estado === 'en_gestion') r.enGestion += 1; else if (x.estado === 'seguimiento') r.seguimiento += 1; else r.gestionados += 1;
+    if (x.gestionado_at && x.gestionado_at >= hoyIni) { r.hoy += 1; if (x.contesto) r.hoyContesto += 1; if (x.interesado) r.hoyInteresados += 1; if (x.venta) r.hoyVentas += 1; }
+  }
+  return { ok: true, cedula: ced, asesor: fila.nombre, campana: fila.campana, hoy: hoyCO(), resumen: r, actuales: actuales.map(corteBA), seguimientos: seg.map(corteBA), gestionadosHoy: hoyL.map(corteBA) };
+}
+app.get('/api/mi-base', async (req, res) => {
+  try {
+    const fila = await resolverAsesor(req.query.cedula);
+    if (!fila) return res.status(404).json({ error: AVISO_CEDULA.no_existe });
+    if (!fila.activo) return res.status(403).json({ error: AVISO_CEDULA.inactivo });
+    res.json(await datosMiBase(fila));
+  } catch (err) { console.error('mi-base:', err.message); res.status(500).json({ error: ERR_BA(err) }); }
+});
+// Resultado en cadena: contestó → efectivo (gestionable) → útil para recuperar → interesado → venta / seguimiento
+app.post('/api/mi-base/resultado', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const fila = await resolverAsesor(b.cedula);
+    if (!fila || !fila.activo) return res.status(403).json({ error: AVISO_CEDULA[fila ? 'inactivo' : 'no_existe'] });
+    const reg = await db.leerFilaBase(+b.id);
+    if (!reg || String(reg.cedula) !== String(fila.cedula)) return res.status(404).json({ error: 'Ese cliente no está asignado a tu cédula.' });
+    if (!['en_gestion', 'seguimiento', 'pendiente'].includes(reg.estado)) return res.status(400).json({ error: 'Ese cliente ya fue gestionado.' });
+    const si = (v) => v === true || v === 'si' || v === 1;
+    const c = { contesto: si(b.contesto), efectivo: null, util: null, interesado: null, venta: null, seguimiento_fecha: null };
+    let estado = 'gestionado', resultado;
+    if (!c.contesto) { estado = 'no_contesto'; resultado = 'No contestó'; }
+    else {
+      c.efectivo = si(b.efectivo);
+      if (!c.efectivo) resultado = 'Contestó · no es cliente efectivo';
+      else {
+        c.util = si(b.util);
+        if (!c.util) resultado = 'Efectivo · no útil para recuperar';
+        else {
+          c.interesado = si(b.interesado);
+          if (!c.interesado) resultado = 'Útil · no interesado';
+          else if (b.seguimiento) { estado = 'seguimiento'; resultado = 'Interesado · en seguimiento'; c.seguimiento_fecha = /^\d{4}-\d{2}-\d{2}$/.test(b.seguimiento_fecha || '') ? b.seguimiento_fecha : null; }
+          else { c.venta = si(b.venta); resultado = c.venta ? 'Venta lograda' : 'Interesado · no se logró la venta'; }
+        }
+      }
+    }
+    await db.guardarResultadoBase(reg.id, String(fila.cedula), { ...c, estado, resultado, nota: String(b.nota || '').slice(0, 1000) || reg.nota || null, intentos: (reg.intentos || 0) + 1, gestionado_at: new Date().toISOString() });
+    res.json(await datosMiBase(fila));
+  } catch (err) { console.error('mi-base/resultado:', err.message); res.status(500).json({ error: ERR_BA(err) }); }
+});
+// Admin: cargar base (ya repartida por cédula en el panel)
+app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
+  try {
+    const { asignaciones, lote } = req.body || {};
+    if (!Array.isArray(asignaciones) || !asignaciones.length) return res.status(400).json({ error: 'No hay filas para cargar.' });
+    const filas = []; const resumen = [];
+    for (const a of asignaciones) {
+      const fila = await resolverAsesor(a.cedula);
+      if (!fila) return res.status(400).json({ error: `La cédula ${a.cedula} no está registrada en Asesores.` });
+      (a.filas || []).forEach((d, i) => {
+        const tels = (Array.isArray(d.telefonos) ? d.telefonos : []).map((t) => soloDigitos(t)).filter((t) => t.length >= 7);
+        filas.push({ cedula: String(fila.cedula), asesor: fila.nombre, lote: String(lote || '').slice(0, 200) || null, cargado_por: req.usuario?.nombre || null, orden: i, telefono: tels[0] || null, datos: { ...d, telefonos: tels } });
+      });
+      resumen.push({ cedula: fila.cedula, asesor: fila.nombre, n: (a.filas || []).length });
+    }
+    if (filas.length > 20000) return res.status(400).json({ error: 'Máximo 20.000 clientes por carga.' });
+    const n = await db.insertarBaseAsesor(filas);
+    res.json({ ok: true, cargados: n, resumen });
+  } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
+});
+// Admin: consumo y resultados por cédula y por lote
+app.get('/api/panel/base-asesor', exigirClave, async (req, res) => {
+  try {
+    const filas = await db.leerBaseAsesorCampos(null, 'cedula, asesor, lote, estado, contesto, efectivo, util, interesado, venta, gestionado_at, cargado');
+    const hoyIni = isoColombia(hoyCO(), false);
+    const nuevo = () => ({ total: 0, pendientes: 0, enGestion: 0, gestionados: 0, noContesto: 0, contesto: 0, efectivos: 0, utiles: 0, interesados: 0, ventas: 0, seguimiento: 0, hoy: 0, ultima: null, cargado: null });
+    const porCed = {}, porLote = {};
+    for (const f of filas) {
+      for (const [m, k] of [[porCed, f.cedula], [porLote, (f.lote || 'Sin nombre') + '\u0001' + f.cedula]]) {
+        const x = (m[k] ??= { ...nuevo(), cedula: f.cedula, asesor: f.asesor, lote: f.lote });
+        x.total += 1;
+        if (f.estado === 'pendiente') x.pendientes += 1; else if (f.estado === 'en_gestion') x.enGestion += 1; else x.gestionados += 1;
+        if (f.estado === 'no_contesto') x.noContesto += 1;
+        if (f.estado === 'seguimiento') x.seguimiento += 1;
+        if (f.contesto) x.contesto += 1; if (f.efectivo) x.efectivos += 1; if (f.util) x.utiles += 1; if (f.interesado) x.interesados += 1; if (f.venta) x.ventas += 1;
+        if (f.gestionado_at && f.gestionado_at >= hoyIni) x.hoy += 1;
+        if (f.gestionado_at && (!x.ultima || f.gestionado_at > x.ultima)) x.ultima = f.gestionado_at;
+        if (f.cargado && (!x.cargado || f.cargado > x.cargado)) x.cargado = f.cargado;
+      }
+    }
+    res.json({ asesores: Object.values(porCed), lotes: Object.values(porLote) });
+  } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
+});
+app.get('/api/panel/base-asesor/detalle', exigirClave, async (req, res) => {
+  try { res.json({ filas: (await db.detalleBaseAsesor(req.query.cedula || null, req.query.lote || null)).map((f) => ({ ...corteBA(f), cedula: f.cedula, asesor: f.asesor, cargado_por: f.cargado_por })) }); }
+  catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
+});
+app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
+  try {
+    const { accion, cedula, lote, aCedula } = req.body || {};
+    if (!cedula) return res.status(400).json({ error: 'Falta la cédula.' });
+    let aNombre = null;
+    if (accion === 'reasignar') { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; }
+    res.json({ ok: true, n: await db.accionBaseAsesor(accion, { cedula: String(cedula), lote: lote || null, aCedula: String(aCedula || ''), aNombre }) });
+  } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
+});
+
 // ---------- 📈 Histórico del embudo ----------
 // Resumen pequeño por día y campaña (se calcula una vez y queda guardado): así el histórico completo carga en segundos.
 // L = teléfonos únicos que llegaron a cada etapa (0 marcado … 6 venta OCM) · cubo = llamadas por canal, asesor y etapa

@@ -851,7 +851,97 @@ async function marcarInteresadosVenta(ids) {
   }
 }
 
+
+// ---------- 👤 Base asignada por asesor (cédula) ----------
+const BA = 'marce_base_asesor';
+async function insertarBaseAsesor(filas) {
+  let n = 0;
+  for (let i = 0; i < filas.length; i += 500) {
+    const { error } = await getClient().from(BA).insert(filas.slice(i, i + 500));
+    if (error) throw error;
+    n += Math.min(500, filas.length - i);
+  }
+  return n;
+}
+// Máximo 2 clientes a la vez: los que ya tiene en gestión + los siguientes pendientes
+async function tomarBaseAsesor(cedula, max = 2) {
+  const c = getClient();
+  const { data: actuales, error } = await c.from(BA).select('*').eq('cedula', cedula).eq('estado', 'en_gestion').order('id').limit(max);
+  if (error) throw error;
+  const lista = actuales || [];
+  if (lista.length < max) {
+    const { data: nuevos, error: e2 } = await c.from(BA).select('id').eq('cedula', cedula).eq('estado', 'pendiente').order('id').limit(max - lista.length);
+    if (e2) throw e2;
+    const ids = (nuevos || []).map((x) => x.id);
+    if (ids.length) {
+      const { data: tomados, error: e3 } = await c.from(BA).update({ estado: 'en_gestion', tomado_at: new Date().toISOString() }).in('id', ids).eq('estado', 'pendiente').select('*');
+      if (e3) throw e3;
+      lista.push(...(tomados || []));
+    }
+  }
+  return lista;
+}
+async function leerBaseAsesorCampos(cedula, campos) {
+  let filas = [];
+  for (let i = 0; i < 50000; i += 1000) {
+    let q = getClient().from(BA).select(campos).order('id').range(i, i + 999);
+    if (cedula) q = q.eq('cedula', cedula);
+    const { data, error } = await q;
+    if (error) throw error;
+    filas = filas.concat(data || []);
+    if (!data || data.length < 1000) break;
+  }
+  return filas;
+}
+async function seguimientosBaseAsesor(cedula) {
+  const { data, error } = await getClient().from(BA).select('*').eq('cedula', cedula).eq('estado', 'seguimiento').order('seguimiento_fecha', { ascending: true, nullsFirst: false }).limit(300);
+  if (error) throw error;
+  return data || [];
+}
+async function gestionadosBaseAsesor(cedula, desdeIso) {
+  const { data, error } = await getClient().from(BA).select('*').eq('cedula', cedula).gte('gestionado_at', desdeIso).order('gestionado_at', { ascending: false }).limit(300);
+  if (error) throw error;
+  return data || [];
+}
+async function guardarResultadoBase(id, cedula, campos) {
+  const { data, error } = await getClient().from(BA).update(campos).eq('id', id).eq('cedula', cedula).select('*').maybeSingle();
+  if (error) throw error;
+  return data;
+}
+async function leerFilaBase(id) {
+  const { data, error } = await getClient().from(BA).select('*').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+async function detalleBaseAsesor(cedula, lote) {
+  let filas = [];
+  for (let i = 0; i < 20000; i += 1000) {
+    let q = getClient().from(BA).select('*').order('id').range(i, i + 999);
+    if (cedula) q = q.eq('cedula', cedula);
+    if (lote) q = q.eq('lote', lote);
+    const { data, error } = await q;
+    if (error) throw error;
+    filas = filas.concat(data || []);
+    if (!data || data.length < 1000) break;
+  }
+  return filas;
+}
+async function accionBaseAsesor(accion, { cedula, lote, aCedula, aNombre }) {
+  const c = getClient();
+  let q;
+  if (accion === 'reciclar') q = c.from(BA).update({ estado: 'pendiente', tomado_at: null }).eq('cedula', cedula).eq('estado', 'no_contesto');
+  else if (accion === 'liberar') q = c.from(BA).update({ estado: 'pendiente', tomado_at: null }).eq('cedula', cedula).eq('estado', 'en_gestion');
+  else if (accion === 'quitar') q = c.from(BA).delete().eq('cedula', cedula).eq('estado', 'pendiente');
+  else if (accion === 'reasignar') q = c.from(BA).update({ cedula: aCedula, asesor: aNombre || null }).eq('cedula', cedula).in('estado', ['pendiente', 'en_gestion']);
+  else throw new Error('Acción no válida');
+  if (lote) q = q.eq('lote', lote);
+  const { data, error } = await q.select('id');
+  if (error) throw error;
+  return (data || []).length;
+}
+
 module.exports = {
+  insertarBaseAsesor, tomarBaseAsesor, leerBaseAsesorCampos, seguimientosBaseAsesor, gestionadosBaseAsesor, guardarResultadoBase, leerFilaBase, detalleBaseAsesor, accionBaseAsesor,
   marcarInteresadosVenta,
   mapaInteresadosPorCelular, interesadoDeVenta, enlazarVentasImportadas,
   obtenerClienteOVenta,
