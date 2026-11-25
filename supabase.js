@@ -926,6 +926,22 @@ async function detalleBaseAsesor(cedula, lote) {
   }
   return filas;
 }
+// Pasa N clientes de la bolsa (sin asignar) a una cédula, en el orden en que se cargaron
+async function asignarDeBolsa(cantidad, aCedula, aNombre, lote) {
+  const c = getClient();
+  let q = c.from(BA).select('id').eq('cedula', 'BOLSA').eq('estado', 'pendiente').order('id').limit(Math.min(+cantidad || 0, 20000));
+  if (lote) q = q.eq('lote', lote);
+  const { data, error } = await q;
+  if (error) throw error;
+  const ids = (data || []).map((x) => x.id);
+  let n = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    const { data: up, error: e2 } = await c.from(BA).update({ cedula: aCedula, asesor: aNombre || null }).in('id', ids.slice(i, i + 500)).eq('cedula', 'BOLSA').select('id');
+    if (e2) throw e2;
+    n += (up || []).length;
+  }
+  return n;
+}
 async function accionBaseAsesor(accion, { cedula, lote, aCedula, aNombre }) {
   const c = getClient();
   let q;
@@ -941,7 +957,7 @@ async function accionBaseAsesor(accion, { cedula, lote, aCedula, aNombre }) {
 }
 
 module.exports = {
-  insertarBaseAsesor, tomarBaseAsesor, leerBaseAsesorCampos, seguimientosBaseAsesor, gestionadosBaseAsesor, guardarResultadoBase, leerFilaBase, detalleBaseAsesor, accionBaseAsesor,
+  insertarBaseAsesor, asignarDeBolsa, tomarBaseAsesor, leerBaseAsesorCampos, seguimientosBaseAsesor, gestionadosBaseAsesor, guardarResultadoBase, leerFilaBase, detalleBaseAsesor, accionBaseAsesor,
   marcarInteresadosVenta,
   mapaInteresadosPorCelular, interesadoDeVenta, enlazarVentasImportadas,
   obtenerClienteOVenta,

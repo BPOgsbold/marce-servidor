@@ -1929,7 +1929,7 @@ app.post('/api/panel/escalamiento', exigirClave, async (req, res) => {
 });
 
 // Interruptores del panel (ej. permitir ventas con fecha anterior).
-const CLAVES_CONFIG = ['ventas_fecha_anterior', 'metas_cierre'];
+const CLAVES_CONFIG = ['ventas_fecha_anterior', 'metas_cierre', 'base_asesor_off'];
 app.get('/api/panel/config', exigirClave, async (req, res) => {
   try {
     res.json(await db.leerConfig());
@@ -1942,7 +1942,7 @@ app.post('/api/panel/config', exigirClave, async (req, res) => {
     const { clave, valor, auditor } = req.body || {};
     if (!CLAVES_CONFIG.includes(clave)) return res.status(400).json({ error: 'Interruptor no válido.' });
     // metas_cierre = { "OUT Hogar": 20, "Recuperación": 40 } · los demás son interruptores Sí/No
-    const v = clave === 'metas_cierre' ? Object.fromEntries(Object.entries(valor || {}).filter(([k, n]) => String(k).trim() && Number(n) >= 0).map(([k, n]) => [String(k).trim().slice(0, 60), Math.round(Number(n))])) : Boolean(valor);
+    const v = clave === 'base_asesor_off' ? Object.fromEntries(Object.entries(valor || {}).filter(([k, x]) => /^\d+$/.test(k) && x).map(([k]) => [k, true])) : clave === 'metas_cierre' ? Object.fromEntries(Object.entries(valor || {}).filter(([k, n]) => String(k).trim() && Number(n) >= 0).map(([k, n]) => [String(k).trim().slice(0, 60), Math.round(Number(n))])) : Boolean(valor);
     await db.guardarConfig(clave, v, auditor);
     await refrescarConfig(true);
     res.json({ ok: true, config: CONFIG.datos });
@@ -2003,8 +2003,10 @@ const corteBA = (f) => ({
 });
 async function datosMiBase(fila) {
   const ced = String(fila.cedula);
+  // Base apagada desde el panel para este asesor: no ve clientes nuevos ni los que tenía abiertos
+  const pausada = Boolean((await refrescarConfig())?.base_asesor_off?.valor?.[ced]);
   const [actuales, conteo, seg, hoyL] = await Promise.all([
-    db.tomarBaseAsesor(ced, MAX_A_LA_VEZ),
+    pausada ? Promise.resolve([]) : db.tomarBaseAsesor(ced, MAX_A_LA_VEZ),
     db.leerBaseAsesorCampos(ced, 'estado, contesto, interesado, venta, gestionado_at'),
     db.seguimientosBaseAsesor(ced),
     db.gestionadosBaseAsesor(ced, isoColombia(hoyCO(), false)),
@@ -2015,7 +2017,8 @@ async function datosMiBase(fila) {
     if (x.estado === 'pendiente') r.pendientes += 1; else if (x.estado === 'en_gestion') r.enGestion += 1; else if (x.estado === 'seguimiento') r.seguimiento += 1; else r.gestionados += 1;
     if (x.gestionado_at && x.gestionado_at >= hoyIni) { r.hoy += 1; if (x.contesto) r.hoyContesto += 1; if (x.interesado) r.hoyInteresados += 1; if (x.venta) r.hoyVentas += 1; }
   }
-  return { ok: true, cedula: ced, asesor: fila.nombre, campana: fila.campana, hoy: hoyCO(), resumen: r, actuales: actuales.map(corteBA), seguimientos: seg.map(corteBA), gestionadosHoy: hoyL.map(corteBA) };
+  if (pausada) { r.pendientes = 0; r.enGestion = 0; }
+  return { ok: true, cedula: ced, asesor: fila.nombre, campana: fila.campana, hoy: hoyCO(), pausada, resumen: r, actuales: actuales.map(corteBA), seguimientos: pausada ? [] : seg.map(corteBA), gestionadosHoy: hoyL.map(corteBA) };
 }
 app.get('/api/mi-base', async (req, res) => {
   try {
@@ -2031,6 +2034,7 @@ app.post('/api/mi-base/resultado', async (req, res) => {
     const b = req.body || {};
     const fila = await resolverAsesor(b.cedula);
     if (!fila || !fila.activo) return res.status(403).json({ error: AVISO_CEDULA[fila ? 'inactivo' : 'no_existe'] });
+    if ((await refrescarConfig())?.base_asesor_off?.valor?.[String(fila.cedula)]) return res.status(403).json({ error: 'Tu base está pausada por el supervisor.' });
     const reg = await db.leerFilaBase(+b.id);
     if (!reg || String(reg.cedula) !== String(fila.cedula)) return res.status(404).json({ error: 'Ese cliente no está asignado a tu cédula.' });
     if (!['en_gestion', 'seguimiento', 'pendiente'].includes(reg.estado)) return res.status(400).json({ error: 'Ese cliente ya fue gestionado.' });
@@ -2063,7 +2067,8 @@ app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
     if (!Array.isArray(asignaciones) || !asignaciones.length) return res.status(400).json({ error: 'No hay filas para cargar.' });
     const filas = []; const resumen = [];
     for (const a of asignaciones) {
-      const fila = await resolverAsesor(a.cedula);
+      // "BOLSA" = base disponible sin asignar: queda guardada para repartirla después
+      const fila = a.cedula === 'BOLSA' ? { cedula: 'BOLSA', nombre: '📦 Bolsa sin asignar' } : await resolverAsesor(a.cedula);
       if (!fila) return res.status(400).json({ error: `La cédula ${a.cedula} no está registrada en Asesores.` });
       (a.filas || []).forEach((d, i) => {
         const tels = (Array.isArray(d.telefonos) ? d.telefonos : []).map((t) => soloDigitos(t)).filter((t) => t.length >= 7);
@@ -2105,10 +2110,11 @@ app.get('/api/panel/base-asesor/detalle', exigirClave, async (req, res) => {
 });
 app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
   try {
-    const { accion, cedula, lote, aCedula } = req.body || {};
+    const { accion, cedula, lote, aCedula, cantidad } = req.body || {};
     if (!cedula) return res.status(400).json({ error: 'Falta la cédula.' });
     let aNombre = null;
-    if (accion === 'reasignar') { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; }
+    if (accion === 'reasignar' || accion === 'asignar') { if (aCedula === 'BOLSA') aNombre = '📦 Bolsa sin asignar'; else { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; } }
+    if (accion === 'asignar') return res.json({ ok: true, n: await db.asignarDeBolsa(cantidad, String(aCedula), aNombre, lote || null) });
     res.json({ ok: true, n: await db.accionBaseAsesor(accion, { cedula: String(cedula), lote: lote || null, aCedula: String(aCedula || ''), aNombre }) });
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
