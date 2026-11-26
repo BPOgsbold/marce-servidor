@@ -26,7 +26,7 @@ const COLS_INTERESADO = {
 const COLS_VENTA = [
   'nombre_cliente', 'cedula', 'telefono', 'direccion', 'barrio', 'ciudad', 'plan',
   'numero_ot', 'numero_cuenta', 'fecha_agenda', 'hora_agenda', 'observaciones', 'tipo_venta',
-  'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual',
+  'servicios_vendidos', 'multiasistencia', 'multiasistencia_cual', 'linea',
 ];
 
 // Inicio del día de hoy en hora Colombia (UTC-5), en ISO.
@@ -52,7 +52,10 @@ async function crearInteresado(asesor, datos) {
   for (const [campo, col] of Object.entries(COLS_INTERESADO)) {
     if (campo in datos) row[col] = datos[campo];
   }
-  const { data, error } = await supabase.from('interesados').insert(row).select().single();
+  if (datos.linea) row.linea = datos.linea;
+  let { data, error } = await supabase.from('interesados').insert(row).select().single();
+  // Si aún no existe la columna "linea" en Supabase, se guarda igual (queda en "datos")
+  if (error && row.linea && /linea/.test(error.message || '')) { delete row.linea; ({ data, error } = await supabase.from('interesados').insert(row).select().single()); }
   if (error) throw error;
   return data;
 }

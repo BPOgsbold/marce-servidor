@@ -1,0 +1,172 @@
+{
+  "interesado": [
+    {
+      "id": "nombre_cliente",
+      "label": "Nombre",
+      "prompt": "¿Cómo se llama el cliente?",
+      "regex": "^.{3,}$",
+      "errorMessage": "Escribe el nombre del cliente (mínimo 3 caracteres)."
+    },
+    {
+      "id": "telefono",
+      "label": "Teléfono",
+      "prompt": "¿Cuál es el número de celular del cliente (el que va a portar o el de contacto)? Si son varios, sepáralos con coma.",
+      "tipo": "telefonos",
+      "errorMessage": "Cada celular debe tener 10 dígitos y empezar en 3 (ej. 3001234567). Si son varios, sepáralos con coma."
+    },
+    {
+      "id": "base_movil",
+      "label": "Base",
+      "prompt": "¿De qué base viene el cliente?",
+      "opciones": [
+        "Portapost",
+        "Listados",
+        "Recuperación"
+      ]
+    },
+    {
+      "id": "operador_actual",
+      "label": "Operador actual",
+      "prompt": "¿Con qué operador está hoy el cliente?",
+      "opciones": [
+        "Tigo",
+        "Movistar",
+        "WOM",
+        "ETB",
+        "Claro",
+        "Otro"
+      ]
+    }
+  ],
+  "venta": [
+    {
+      "id": "tipo_venta",
+      "label": "Tipo de venta",
+      "prompt": "¡Qué buena noticia! 🎉 ¿Qué tipo de venta es?",
+      "opciones": [
+        "Portabilidad",
+        "Línea nueva",
+        "Convergente"
+      ]
+    },
+    {
+      "id": "fecha_venta",
+      "label": "Fecha de la venta",
+      "prompt": "📅 ¿De qué día es esta venta? Si es de hoy toca \"Hoy\"; si es de un día anterior, elígela en el calendario.",
+      "tipo": "fecha_pasada",
+      "soloSi": "ventas_fecha_anterior",
+      "opcionesSugeridas": [
+        "Hoy",
+        "Ayer"
+      ],
+      "errorMessage": "No entendí la fecha. Escribe hoy, ayer o una fecha como 10/10.",
+      "entrada": "fecha",
+      "formato": "iso"
+    },
+    {
+      "id": "observaciones",
+      "label": "Observaciones",
+      "prompt": "Ya casi. ¿Alguna observación? (si no hay, toca \"Ninguna\")",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": [
+        "Ninguna"
+      ],
+      "errorMessage": "Escribe una observación o \"Ninguna\"."
+    }
+  ],
+  "no_venta": [
+    {
+      "id": "motivo_no_interes",
+      "label": "Tipificación",
+      "prompt": "¿Por qué no se logró la venta? Elige la tipificación 👇",
+      "opciones": [
+        "Oferta no atractiva · Precio ETB",
+        "Oferta no atractiva · Precio Tigo",
+        "Oferta no atractiva · Precio Movistar",
+        "Oferta no atractiva · Precio WOM",
+        "Oferta no atractiva · Precio otros",
+        "Oferta no atractiva · Producto",
+        "Mala experiencia con procesos de Claro",
+        "Mejores promociones ETB",
+        "Mejores promociones Tigo",
+        "Mejores promociones Movistar",
+        "Mejores promociones WOM",
+        "Mejores promociones otros",
+        "No apto por cartera",
+        "No cumple 90 días (restricción)",
+        "Cliente canceló antes de 90 días",
+        "Tarifa de retención activa",
+        "Problemas de señal / cobertura móvil",
+        "Cliente corporativo",
+        "Cliente pide no volver a llamar",
+        "Ya tiene plan pospago con Claro",
+        "Desconfía de trámites telefónicos",
+        "No hay contacto con el titular"
+      ]
+    }
+  ],
+  "rellamar": [
+    {
+      "id": "rellamar_fecha",
+      "label": "Fecha",
+      "prompt": "📞 Listo. ¿Para cuándo quedó la nueva llamada? Elige la fecha en el calendario 📅 o toca un botón.",
+      "tipo": "fecha_futura",
+      "opcionesSugeridas": [
+        "Hoy",
+        "Mañana",
+        "Pasado mañana"
+      ],
+      "errorMessage": "No entendí la fecha. Escribe hoy, mañana, un día (ej. viernes) o una fecha como 20/10.",
+      "entrada": "fecha",
+      "formato": "iso"
+    },
+    {
+      "id": "rellamar_hora",
+      "label": "Hora",
+      "prompt": "¿A qué hora lo llamamos? Elige la hora 🕑 o toca un botón.",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": [
+        "8:00 a. m.",
+        "10:00 a. m.",
+        "2:00 p. m.",
+        "4:00 p. m."
+      ],
+      "errorMessage": "Escribe la hora, por ejemplo 3:30 p. m.",
+      "entrada": "hora"
+    },
+    {
+      "id": "rellamar_nota",
+      "label": "Nota",
+      "prompt": "¿Qué te dijo el cliente? (si no hay nada, toca \"Ninguna\")",
+      "regex": "^.{1,}$",
+      "opcionesSugeridas": [
+        "Está ocupado",
+        "Lo consulta con la familia",
+        "Llamar al titular",
+        "Ninguna"
+      ],
+      "errorMessage": "Escribe una nota o \"Ninguna\"."
+    }
+  ],
+  "escalamiento": [
+    {
+      "id": "escalamiento_tipo",
+      "label": "Tipo",
+      "prompt": "🛠 ¿Qué escalamiento necesitas?",
+      "opciones": [
+        "Validar cédula con cartera",
+        "Token / SIM pendiente",
+        "Error en el sistema de ventas",
+        "Cliente corporativo (Empresas)",
+        "Otro"
+      ]
+    },
+    {
+      "id": "escalamiento_detalle",
+      "label": "Detalle",
+      "prompt": "Cuéntame el detalle para el back office (ej. dirección exacta a crear, cédula, qué error sale…).",
+      "regex": "^.{3,}$",
+      "errorMessage": "Escribe un poco más de detalle (mínimo 3 caracteres)."
+    }
+  ]
+}

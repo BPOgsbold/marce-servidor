@@ -57,7 +57,12 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const leer = (archivo) => fs.readFileSync(path.join(__dirname, archivo), 'utf8');
 // Se leen en cada mensaje: si editas los archivos de config no hace falta reiniciar.
-const CAMPOS = () => JSON.parse(leer('campos.json'));
+// Línea de negocio del asesor (🏠 Hogar / 📱 Móvil): cada mensaje del chat corre con la suya y usa su formulario
+const { AsyncLocalStorage } = require('async_hooks');
+const LINEA = new AsyncLocalStorage();
+const lineaActual = () => (LINEA.getStore()?.linea === 'movil' ? 'movil' : 'hogar');
+const esMovil = (c) => c?.linea === 'movil' || c?.datos?.linea === 'movil';
+const CAMPOS = () => JSON.parse(leer(lineaActual() === 'movil' ? 'campos_movil.json' : 'campos.json'));
 
 // ---------------------------------------------------------------------------
 // Interruptores que el back prende/apaga desde el panel (tabla marce_config).
@@ -316,7 +321,14 @@ function tarjetaDe(c) {
     ? new Date(c.created_at).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
     : '';
   const cob = norm(c.cobertura_validada);
-  const detalles = [
+  const detalles = esMovil(c) ? [
+    ['Línea', '📱 Móvil'],
+    ['Gestiona', c.asesor],
+    ['Teléfono', c.telefono],
+    ['Base', c.datos?.base_movil],
+    ['Operador actual', c.datos?.operador_actual],
+    ['Registrado', fecha],
+  ].filter(([, v]) => v) : [
     ['Gestiona', c.asesor],
     ['Teléfono', c.telefono],
     ['Dirección', [c.direccion, c.ciudad, regionalDe(c.ciudad, c.datos?.departamento)].filter(Boolean).join(' · ')],
@@ -377,6 +389,12 @@ function tarjetaDe(c) {
 
 function accionesPara(c) {
   if (!c) return MENU;
+  // Móvil: sin cobertura ni OT activa (no aplican)
+  if (esMovil(c)) {
+    if (c.resultado === 'venta') return [OP.NOTA, OP.EDITAR, OP.BUSCAR, OP.NUEVO];
+    if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.ESCALAR, OP.NOTA, OP.EDITAR];
+    return [OP.VENTA, OP.NO_VENTA, OP.RELLAMAR, OP.ESCALAR, OP.NOTA, OP.EDITAR];
+  }
   const sinCobertura = norm(c.cobertura_validada) === 'no';
   if (c.resultado === 'venta') return [OP.NOTA, OP.EDITAR, OP.BUSCAR, OP.NUEVO];
   if (c.resultado === 'no_venta') return [OP.VENTA, OP.RELLAMAR, OP.OT_ACTIVA, OP.ESCALAR, OP.COBERTURA, OP.NOTA, OP.EDITAR];
@@ -842,6 +860,11 @@ async function finalizarCaptura(sesion, asesor) {
   sesion.captura = null;
   try {
     if (tipo === 'interesado') {
+      if (lineaActual() === 'movil') {
+        const creado = await db.crearInteresado(asesor, { ...datos, linea: 'movil' });
+        sesion.cliente = { ...creado, venta: null };
+        return { reply: '✅ ¡Interesado de Móvil registrado! Sigue con la oferta — si pone una objeción, escríbemela y te ayudo.', tarjetas: [tarjetaDe(sesion.cliente)], opciones: accionesPara(sesion.cliente) };
+      }
       const creado = await db.crearInteresado(asesor, { ...datos, cobertura: norm(datos.cobertura) === 'si' ? 'sí' : 'no' });
       sesion.cliente = { ...creado, venta: null };
       const conCob = norm(datos.cobertura) === 'si';
@@ -855,7 +878,7 @@ async function finalizarCaptura(sesion, asesor) {
     }
     const c = sesion.cliente;
     if (tipo === 'venta') {
-      await db.guardarVenta(asesor, c, datos);
+      await db.guardarVenta(asesor, c, esMovil(c) || lineaActual() === 'movil' ? { ...datos, linea: 'movil' } : datos);
       await db.actualizarInteresado(c.id, { resultado: 'venta', ciudad: datos.ciudad || c.ciudad || null });
       sesion.cliente = await db.obtenerCliente(c.id);
       return {
@@ -2085,20 +2108,53 @@ app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
 // Admin: consumo y resultados por cédula y por lote
-app.get('/api/panel/base-asesor', exigirClave, async (req, res) => {
+// Resultado final en Marce: lo que el asesor registró en el asistente (interesado / venta) después de cargar la base.
+// Así, si en la base marcó "no venta" pero después vendió y la registró en Marce, cuenta como venta.
+async function marceDeBase(filas) {
+  const gest = filas.filter((f) => f.cedula !== 'BOLSA' && !['pendiente', 'en_gestion'].includes(f.estado));
+  const telsDe = (f) => [...new Set([f.telefono, ...(Array.isArray(f.tels) ? f.tels : f.datos?.telefonos || [])].map((t) => soloDigitos(t).slice(-10)).filter((t) => t.length >= 7))];
+  const todos = [...new Set(gest.flatMap(telsDe))];
+  const idx = {};
+  if (todos.length) {
+    const m = await db.marcePorTelefonos(todos);
+    const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
+    for (const r of m.interesados) for (const t of partes(r.telefono)) (idx[t] ??= []).push({ tipo: 'interesado', fecha: r.created_at, resultado: r.resultado || '', asesor: r.asesor });
+    for (const r of m.ventas) for (const t of partes(r.telefono)) (idx[t] ??= []).push({ tipo: 'venta', fecha: r.created_at, asesor: r.asesor, ot: r.numero_ot });
+  }
+  const res = new Map();
+  for (const f of gest) {
+    // Cuenta lo registrado en Marce desde el día anterior a la carga de la base
+    const desde = new Date(Date.parse(f.cargado || 0) - 864e5).toISOString();
+    const regs = telsDe(f).flatMap((t) => idx[t] || []).filter((r) => r.fecha >= desde);
+    if (!regs.length) continue;
+    const vta = regs.find((r) => r.tipo === 'venta');
+    const intr = regs.filter((r) => r.tipo === 'interesado').sort((a, b) => (a.fecha < b.fecha ? 1 : -1))[0];
+    res.set(f.id, { enMarce: true, venta: Boolean(vta), ot: vta?.ot || null, resultado: vta ? 'venta' : intr?.resultado || '', fecha: (vta || intr).fecha, asesor: (vta || intr).asesor });
+  }
+  return res;
+}
+// Admin: consumo y resultados por cédula y por lote
+app.get('/api/panel/base-asesor', exigirClave, cachear(60000), async (req, res) => {
   try {
-    const filas = await db.leerBaseAsesorCampos(null, 'cedula, asesor, lote, estado, contesto, efectivo, util, interesado, venta, gestionado_at, cargado');
+    const filas = await db.leerBaseAsesorCampos(null, 'id, cedula, asesor, lote, estado, contesto, efectivo, util, interesado, venta, gestionado_at, cargado, telefono, tels:datos->telefonos');
+    let mar = new Map();
+    try { mar = await marceDeBase(filas); } catch (e) { console.error('base-asesor marce:', e.message); }
     const hoyIni = isoColombia(hoyCO(), false);
-    const nuevo = () => ({ total: 0, pendientes: 0, enGestion: 0, gestionados: 0, noContesto: 0, contesto: 0, efectivos: 0, utiles: 0, interesados: 0, ventas: 0, seguimiento: 0, hoy: 0, ultima: null, cargado: null });
+    const nuevo = () => ({ total: 0, pendientes: 0, enGestion: 0, gestionados: 0, noContesto: 0, contesto: 0, efectivos: 0, utiles: 0, interesados: 0, ventas: 0, seguimiento: 0, hoy: 0, ultima: null, cargado: null,
+      enMarce: 0, intEnMarce: 0, ventasMarce: 0, ventasFinal: 0, ventasRecuperadas: 0 });
     const porCed = {}, porLote = {};
     for (const f of filas) {
-      for (const [m, k] of [[porCed, f.cedula], [porLote, (f.lote || 'Sin nombre') + '\u0001' + f.cedula]]) {
-        const x = (m[k] ??= { ...nuevo(), cedula: f.cedula, asesor: f.asesor, lote: f.lote });
+      const m = mar.get(f.id);
+      for (const [mp, k] of [[porCed, f.cedula], [porLote, (f.lote || 'Sin nombre') + '\u0001' + f.cedula]]) {
+        const x = (mp[k] ??= { ...nuevo(), cedula: f.cedula, asesor: f.asesor, lote: f.lote });
         x.total += 1;
         if (f.estado === 'pendiente') x.pendientes += 1; else if (f.estado === 'en_gestion') x.enGestion += 1; else x.gestionados += 1;
         if (f.estado === 'no_contesto') x.noContesto += 1;
         if (f.estado === 'seguimiento') x.seguimiento += 1;
         if (f.contesto) x.contesto += 1; if (f.efectivo) x.efectivos += 1; if (f.util) x.utiles += 1; if (f.interesado) x.interesados += 1; if (f.venta) x.ventas += 1;
+        if (m) { x.enMarce += 1; if (f.interesado) x.intEnMarce += 1; if (m.venta) x.ventasMarce += 1; }
+        if (f.venta || m?.venta) x.ventasFinal += 1;
+        if (!f.venta && m?.venta) x.ventasRecuperadas += 1; // en la base quedó como no venta / seguimiento, pero la venta está en Marce
         if (f.gestionado_at && f.gestionado_at >= hoyIni) x.hoy += 1;
         if (f.gestionado_at && (!x.ultima || f.gestionado_at > x.ultima)) x.ultima = f.gestionado_at;
         if (f.cargado && (!x.cargado || f.cargado > x.cargado)) x.cargado = f.cargado;
@@ -2108,8 +2164,12 @@ app.get('/api/panel/base-asesor', exigirClave, async (req, res) => {
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
 app.get('/api/panel/base-asesor/detalle', exigirClave, async (req, res) => {
-  try { res.json({ filas: (await db.detalleBaseAsesor(req.query.cedula || null, req.query.lote || null)).map((f) => ({ ...corteBA(f), cedula: f.cedula, asesor: f.asesor, cargado_por: f.cargado_por })) }); }
-  catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
+  try {
+    const filas = await db.detalleBaseAsesor(req.query.cedula || null, req.query.lote || null);
+    let mar = new Map();
+    try { mar = await marceDeBase(filas); } catch (e) { console.error('detalle marce:', e.message); }
+    res.json({ filas: filas.map((f) => ({ ...corteBA(f), cedula: f.cedula, asesor: f.asesor, cargado_por: f.cargado_por, marce: mar.get(f.id) || null })) });
+  } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
 app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
   try {
@@ -2575,8 +2635,13 @@ app.post('/api/chat', async (req, res) => {
       }
       asesor = fila.nombre;
     }
-    const sesion = hidratar(estado) || sesiones.get(sessionId) || nuevaSesion();
-    const respuesta = await manejar(sesion, asesor, message);
+    const linea = req.body?.linea === 'movil' ? 'movil' : 'hogar';
+    // Todo (incluido rearmar la conversación guardada) corre con el formulario de su línea
+    const { sesion, respuesta } = await LINEA.run({ linea }, async () => {
+      const ses = hidratar(estado) || sesiones.get(sessionId) || nuevaSesion();
+      ses.linea = linea;
+      return { sesion: ses, respuesta: await manejar(ses, asesor, message) };
+    });
     sesiones.set(sessionId, sesion);
     if (sesiones.size > 2000) sesiones.delete(sesiones.keys().next().value);
     res.json({ ...respuesta, estado: serializar(sesion), asesor: asesor || undefined });
