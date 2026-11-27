@@ -644,8 +644,10 @@ async function guardarOcmDia(fila) {
   return data;
 }
 // ---------- Histórico del embudo: un resumen pequeño por día y campaña ----------
-async function leerOcmResumenes(hasta) {
-  const { data, error } = await getClient().from('marce_ocm_dia').select('dia, campana, total, resumen').lte('dia', hasta).order('dia').limit(2000);
+async function leerOcmResumenes(hasta, desde) {
+  let q = getClient().from('marce_ocm_dia').select('dia, campana, total, resumen, actualizado').lte('dia', hasta).order('dia').limit(2000);
+  if (desde) q = q.gte('dia', desde);
+  const { data, error } = await q;
   if (error) throw error;
   return data || [];
 }
@@ -653,6 +655,13 @@ async function leerOcmFila(dia, campana) {
   const { data, error } = await getClient().from('marce_ocm_dia').select('*').eq('dia', dia).eq('campana', campana || '').single();
   if (error) throw error;
   return data;
+}
+async function compactarOcmDia(dia, campana, resumen) {
+  // Queda solo el resumen (valores). El cubo también se vacía si el resumen ya trae las tipificaciones.
+  const cambios = { filas: [], marcados: null };
+  if (resumen) { cambios.resumen = { ...resumen, compacto: true }; if (resumen.tips) cambios.cubo = []; }
+  const { error } = await getClient().from('marce_ocm_dia').update(cambios).eq('dia', dia).eq('campana', campana || '');
+  if (error) throw error;
 }
 async function guardarOcmResumen(dia, campana, resumen) {
   const { error } = await getClient().from('marce_ocm_dia').update({ resumen }).eq('dia', dia).eq('campana', campana || '');
@@ -668,6 +677,21 @@ async function ventasCreadasEntre(desde, hasta) {
     if (!data || data.length < 1000) break;
   }
   return filas;
+}
+// Interesados y ventas de Marce creados desde una fecha (para cruzar con la base por asesor en memoria, sin ilike por teléfono)
+async function marceDesde(desde) {
+  const leer = async (tabla, cols) => {
+    let filas = [];
+    for (let i = 0; i < 60000; i += 1000) {
+      const { data, error } = await getClient().from(tabla).select(cols).gte('created_at', desde).order('id').range(i, i + 999);
+      if (error) throw error;
+      filas = filas.concat(data || []);
+      if (!data || data.length < 1000) break;
+    }
+    return filas;
+  };
+  const [interesados, ventas] = await Promise.all([leer('interesados', 'id, telefono, asesor, resultado, created_at'), leer('ventas', 'id, telefono, asesor, created_at, numero_ot')]);
+  return { interesados, ventas };
 }
 async function leerOcmDias(desde, hasta) {
   const { data, error } = await getClient().from('marce_ocm_dia').select('*').gte('dia', desde).lte('dia', hasta).order('dia').limit(400);
@@ -939,16 +963,16 @@ async function borrarIdsBase(ids) {
   return n;
 }
 // Pasa N clientes de la bolsa (sin asignar) a una cédula, en el orden en que se cargaron
-async function asignarDeBolsa(cantidad, aCedula, aNombre, lote) {
+async function asignarDeBolsa(cantidad, aCedula, aNombre, lote, bolsa = 'BOLSA') {
   const c = getClient();
-  let q = c.from(BA).select('id').eq('cedula', 'BOLSA').eq('estado', 'pendiente').order('id').limit(Math.min(+cantidad || 0, 20000));
+  let q = c.from(BA).select('id').eq('cedula', bolsa).eq('estado', 'pendiente').order('id').limit(Math.min(+cantidad || 0, 20000));
   if (lote) q = q.eq('lote', lote);
   const { data, error } = await q;
   if (error) throw error;
   const ids = (data || []).map((x) => x.id);
   let n = 0;
   for (let i = 0; i < ids.length; i += 500) {
-    const { data: up, error: e2 } = await c.from(BA).update({ cedula: aCedula, asesor: aNombre || null }).in('id', ids.slice(i, i + 500)).eq('cedula', 'BOLSA').select('id');
+    const { data: up, error: e2 } = await c.from(BA).update({ cedula: aCedula, asesor: aNombre || null }).in('id', ids.slice(i, i + 500)).eq('cedula', bolsa).select('id');
     if (e2) throw e2;
     n += (up || []).length;
   }
@@ -976,7 +1000,7 @@ module.exports = {
   ventasGestionadasDia,
   ventasPorAgenda,
   leerCampanasDia, guardarCampanaDia,
-  guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos, leerOcmResumenes, leerOcmFila, guardarOcmResumen, ventasCreadasEntre,
+  guardarOcmDia, leerOcmDias, borrarOcmDia, marcePorTelefonos, marceDesde, leerOcmResumenes, leerOcmFila, guardarOcmResumen, compactarOcmDia, ventasCreadasEntre,
   guardarBaseDia, leerBasesDia, diasBases, borrarBaseDia, leerOcmDia, diasOcm, interesadosDelDia,
   llavesVentas, insertarVentasLote, deshacerImportacion, contarImportadas,
   panelDatos,

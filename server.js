@@ -1685,7 +1685,7 @@ const PERMISO_RUTA = {
   '/api/panel/auditar': ['gestion'], '/api/panel/registro': ['editar'], '/api/panel/editar': ['editar'], '/api/panel/eliminar': ['eliminar'],
   '/api/panel/config': ['administrar'], '/api/panel/asesores': ['administrar'], '/api/panel/asesores/lote': ['administrar'], '/api/panel/asesores/unir': ['administrar'],
   '/api/panel/homologar-direcciones': ['administrar'], '/api/panel/usuarios': ['usuarios'],
-  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/base-asesor/cargar': ['administrar'], '/api/panel/base-asesor/accion': ['administrar'], '/api/panel/bases': ['administrar'], '/api/panel/bases/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
+  '/api/panel/importar': ['usuarios'], '/api/panel/importar/enlazar': ['usuarios'], '/api/panel/campana-dia': ['administrar'], '/api/panel/ocm': ['administrar'], '/api/panel/ocm/borrar': ['administrar'], '/api/panel/ocm/compactar': ['administrar'], '/api/panel/base-asesor/cargar': ['administrar'], '/api/panel/base-asesor/accion': ['administrar'], '/api/panel/bases': ['administrar'], '/api/panel/bases/borrar': ['administrar'], '/api/panel/importar/deshacer': ['usuarios'],
 };
 app.use('/api/panel', (req, res, next) => {
   if (req.method !== 'POST' || req.path === '/login' || req.path === '/mi-clave') return next();
@@ -2019,6 +2019,7 @@ app.post('/api/panel/ocm', exigirClave, async (req, res) => {
 // ---------- 👤 Base por asesor: el admin asigna clientes por cédula; el asesor los gestiona de a 2 ----------
 const ERR_BA = (err) => (/marce_base_asesor/.test(err.message) ? 'Falta correr supabase_base_asesor.sql en Supabase.' : err.message);
 const MAX_A_LA_VEZ = 2;
+const esBolsa = (c) => c === 'BOLSA' || c === 'BOLSA_M';
 const corteBA = (f) => ({
   id: f.id, lote: f.lote, estado: f.estado, datos: f.datos || {}, telefono: f.telefono, cargado: f.cargado,
   contesto: f.contesto, efectivo: f.efectivo, util: f.util, interesado: f.interesado, venta: f.venta,
@@ -2091,7 +2092,8 @@ app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
     const filas = []; const resumen = [];
     for (const a of asignaciones) {
       // "BOLSA" = base disponible sin asignar: queda guardada para repartirla después
-      const fila = a.cedula === 'BOLSA' ? { cedula: 'BOLSA', nombre: '📦 Bolsa sin asignar' } : await resolverAsesor(a.cedula);
+      // BOLSA = Hogar · BOLSA_M = Móvil
+      const fila = esBolsa(a.cedula) ? { cedula: a.cedula, nombre: a.cedula === 'BOLSA_M' ? '📦 Bolsa Móvil sin asignar' : '📦 Bolsa sin asignar' } : await resolverAsesor(a.cedula);
       if (!fila) return res.status(400).json({ error: `La cédula ${a.cedula} no está registrada en Asesores.` });
       (a.filas || []).forEach((d, i) => {
         const tels = (Array.isArray(d.telefonos) ? d.telefonos : []).map((t) => soloDigitos(t)).filter((t) => t.length >= 7);
@@ -2107,27 +2109,30 @@ app.post('/api/panel/base-asesor/cargar', exigirClave, async (req, res) => {
     res.json({ ok: true, cargados: n, repetidos: filas.length - nuevas.length, resumen });
   } catch (err) { res.status(500).json({ error: ERR_BA(err) }); }
 });
-// Admin: consumo y resultados por cédula y por lote
 // Resultado final en Marce: lo que el asesor registró en el asistente (interesado / venta) después de cargar la base.
 // Así, si en la base marcó "no venta" pero después vendió y la registró en Marce, cuenta como venta.
+// Cruza la base por asesor con Marce: TODOS los clientes asignados (gestionados o no). Si el asesor registró la venta/interesado
+// en Marce sin marcarlo en su base, igual cuenta. Lee Marce una sola vez desde la carga más vieja y cruza en memoria.
+let MARCE_BA = { t: 0, desde: '', datos: null };
 async function marceDeBase(filas) {
-  const gest = filas.filter((f) => f.cedula !== 'BOLSA' && !['pendiente', 'en_gestion'].includes(f.estado));
-  const telsDe = (f) => [...new Set([f.telefono, ...(Array.isArray(f.tels) ? f.tels : f.datos?.telefonos || [])].map((t) => soloDigitos(t).slice(-10)).filter((t) => t.length >= 7))];
-  const todos = [...new Set(gest.flatMap(telsDe))];
-  const idx = {};
-  if (todos.length) {
-    const m = await db.marcePorTelefonos(todos);
-    const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
-    for (const r of m.interesados) for (const t of partes(r.telefono)) (idx[t] ??= []).push({ tipo: 'interesado', fecha: r.created_at, resultado: r.resultado || '', asesor: r.asesor });
-    for (const r of m.ventas) for (const t of partes(r.telefono)) (idx[t] ??= []).push({ tipo: 'venta', fecha: r.created_at, asesor: r.asesor, ot: r.numero_ot });
-  }
+  const gest = filas.filter((f) => !esBolsa(f.cedula));
   const res = new Map();
+  if (!gest.length) return res;
+  const telsDe = (f) => [...new Set([f.telefono, ...(Array.isArray(f.tels) ? f.tels : f.datos?.telefonos || [])].map((t) => soloDigitos(t).slice(-10)).filter((t) => t.length >= 7))];
+  const min = gest.reduce((m, f) => (f.cargado && f.cargado < m ? f.cargado : m), new Date().toISOString());
+  const desde = new Date(Date.parse(min) - 864e5).toISOString().slice(0, 10);
+  if (!MARCE_BA.datos || MARCE_BA.desde > desde || Date.now() - MARCE_BA.t > 60000) MARCE_BA = { t: Date.now(), desde, datos: await db.marceDesde(desde + 'T05:00:00Z') };
+  const m = MARCE_BA.datos;
+  const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
+  const idx = {};
+  for (const r of m.interesados) for (const t of partes(r.telefono)) (idx[t] ??= []).push({ tipo: 'interesado', fecha: r.created_at, resultado: r.resultado || '', asesor: r.asesor });
+  for (const r of m.ventas) for (const t of partes(r.telefono)) (idx[t] ??= []).push({ tipo: 'venta', fecha: r.created_at, asesor: r.asesor, ot: r.numero_ot });
   for (const f of gest) {
     // Cuenta lo registrado en Marce desde el día anterior a la carga de la base
-    const desde = new Date(Date.parse(f.cargado || 0) - 864e5).toISOString();
-    const regs = telsDe(f).flatMap((t) => idx[t] || []).filter((r) => r.fecha >= desde);
+    const desdeF = new Date(Date.parse(f.cargado || 0) - 864e5).toISOString();
+    const regs = telsDe(f).flatMap((t) => idx[t] || []).filter((r) => r.fecha >= desdeF);
     if (!regs.length) continue;
-    const vta = regs.find((r) => r.tipo === 'venta');
+    const vta = regs.filter((r) => r.tipo === 'venta').sort((a, b) => (a.fecha < b.fecha ? -1 : 1))[0];
     const intr = regs.filter((r) => r.tipo === 'interesado').sort((a, b) => (a.fecha < b.fecha ? 1 : -1))[0];
     res.set(f.id, { enMarce: true, venta: Boolean(vta), ot: vta?.ot || null, resultado: vta ? 'venta' : intr?.resultado || '', fecha: (vta || intr).fecha, asesor: (vta || intr).asesor });
   }
@@ -2137,8 +2142,13 @@ async function marceDeBase(filas) {
 app.get('/api/panel/base-asesor', exigirClave, cachear(60000), async (req, res) => {
   try {
     const filas = await db.leerBaseAsesorCampos(null, 'id, cedula, asesor, lote, estado, contesto, efectivo, util, interesado, venta, gestionado_at, cargado, telefono, tels:datos->telefonos');
+    // Filtro por día gestionado (Colombia): los resultados solo cuentan lo gestionado en ese rango; la base y el consumo siguen completos
+    const gd = /^\d{4}-\d{2}-\d{2}$/.test(req.query.desde || '') ? [isoColombia(req.query.desde, false), isoColombia(/^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta || '') ? req.query.hasta : req.query.desde, true)] : null;
     let mar = new Map();
     try { mar = await marceDeBase(filas); } catch (e) { console.error('base-asesor marce:', e.message); }
+    // Día de gestión: cuando el asesor lo marcó en su base; si no lo marcó pero lo registró en Marce, la fecha de Marce
+    const diaGest = (f) => f.gestionado_at || mar.get(f.id)?.fecha || null;
+    const enRango = (f) => !gd || (diaGest(f) && diaGest(f) >= gd[0] && diaGest(f) < gd[1]);
     const hoyIni = isoColombia(hoyCO(), false);
     const nuevo = () => ({ total: 0, pendientes: 0, enGestion: 0, gestionados: 0, noContesto: 0, contesto: 0, efectivos: 0, utiles: 0, interesados: 0, ventas: 0, seguimiento: 0, hoy: 0, ultima: null, cargado: null,
       enMarce: 0, intEnMarce: 0, ventasMarce: 0, ventasFinal: 0, ventasRecuperadas: 0 });
@@ -2148,7 +2158,13 @@ app.get('/api/panel/base-asesor', exigirClave, cachear(60000), async (req, res) 
       for (const [mp, k] of [[porCed, f.cedula], [porLote, (f.lote || 'Sin nombre') + '\u0001' + f.cedula]]) {
         const x = (mp[k] ??= { ...nuevo(), cedula: f.cedula, asesor: f.asesor, lote: f.lote });
         x.total += 1;
-        if (f.estado === 'pendiente') x.pendientes += 1; else if (f.estado === 'en_gestion') x.enGestion += 1; else x.gestionados += 1;
+        if (f.estado === 'pendiente') x.pendientes += 1; else if (f.estado === 'en_gestion') x.enGestion += 1; else x.gestionadosTodo = (x.gestionadosTodo || 0) + 1;
+        if (f.cargado && (!x.cargado || f.cargado > x.cargado)) x.cargado = f.cargado;
+        if (!enRango(f)) continue;
+        const sinMarcar = ['pendiente', 'en_gestion'].includes(f.estado);
+        if (sinMarcar && !m) continue;
+        if (sinMarcar) x.sinMarcar = (x.sinMarcar || 0) + 1; // lo registró en Marce pero no lo marcó en la base
+        if (!sinMarcar) x.gestionados += 1;
         if (f.estado === 'no_contesto') x.noContesto += 1;
         if (f.estado === 'seguimiento') x.seguimiento += 1;
         if (f.contesto) x.contesto += 1; if (f.efectivo) x.efectivos += 1; if (f.util) x.utiles += 1; if (f.interesado) x.interesados += 1; if (f.venta) x.ventas += 1;
@@ -2157,7 +2173,6 @@ app.get('/api/panel/base-asesor', exigirClave, cachear(60000), async (req, res) 
         if (!f.venta && m?.venta) x.ventasRecuperadas += 1; // en la base quedó como no venta / seguimiento, pero la venta está en Marce
         if (f.gestionado_at && f.gestionado_at >= hoyIni) x.hoy += 1;
         if (f.gestionado_at && (!x.ultima || f.gestionado_at > x.ultima)) x.ultima = f.gestionado_at;
-        if (f.cargado && (!x.cargado || f.cargado > x.cargado)) x.cargado = f.cargado;
       }
     }
     res.json({ asesores: Object.values(porCed), lotes: Object.values(porLote) });
@@ -2176,8 +2191,8 @@ app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
     const { accion, cedula, lote, aCedula, cantidad } = req.body || {};
     if (!cedula) return res.status(400).json({ error: 'Falta la cédula.' });
     let aNombre = null;
-    if (accion === 'reasignar' || accion === 'asignar') { if (aCedula === 'BOLSA') aNombre = '📦 Bolsa sin asignar'; else { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; } }
-    if (accion === 'asignar') return res.json({ ok: true, n: await db.asignarDeBolsa(cantidad, String(aCedula), aNombre, lote || null) });
+    if (accion === 'reasignar' || accion === 'asignar') { if (esBolsa(aCedula)) aNombre = aCedula === 'BOLSA_M' ? '📦 Bolsa Móvil sin asignar' : '📦 Bolsa sin asignar'; else { const f = await resolverAsesor(aCedula); if (!f) return res.status(400).json({ error: 'La cédula destino no está en Asesores.' }); aNombre = f.nombre; } }
+    if (accion === 'asignar') return res.json({ ok: true, n: await db.asignarDeBolsa(cantidad, String(aCedula), aNombre, lote || null, esBolsa(cedula) ? cedula : 'BOLSA') });
     // Quita los clientes repetidos (mismo celular y misma OT) que aún no se han gestionado; deja el primero que se cargó
     if (accion === 'duplicados') {
       const filas = await db.leerBaseAsesorCampos(null, 'id, telefono, datos, estado');
@@ -2198,47 +2213,89 @@ app.post('/api/panel/base-asesor/accion', exigirClave, async (req, res) => {
 // L = teléfonos únicos que llegaron a cada etapa (0 marcado … 6 venta OCM) · cubo = llamadas por canal, asesor y etapa
 // vm = ventas de Marce registradas ese día de teléfonos del marcador [canal, asesor] · ints = interesados [canal, asesor, en Marce 1/0]
 async function calcularResumenOcm(f) {
-  const nv = new Map();
-  for (const p of String(f.marcados || '').split(',')) { const [t, n0] = p.split(':'); if (!t) continue; const n = Math.min(+n0 || 0, 6); if (!(nv.get(t) >= n)) nv.set(t, n); }
+  const nv = new Map(), hora = new Map();
+  for (const p of String(f.marcados || '').split(',')) { const [t, n0, h] = p.split(':'); if (!t) continue; const n = Math.min(+n0 || 0, 6); if (!(nv.get(t) >= n)) { nv.set(t, n); if (h) hora.set(t, h); } }
   const info = new Map();
-  for (const x of f.filas || []) { const n = Math.min(x[6], 6); if (!(nv.get(x[0]) >= n)) nv.set(x[0], n); const pr = info.get(x[0]); if (!pr || x[6] > pr.n) info.set(x[0], { c: x[2] || '', a: x[5] || '', n: x[6] }); }
+  for (const x of f.filas || []) {
+    const n = Math.min(x[6], 6);
+    if (!(nv.get(x[0]) >= n)) nv.set(x[0], n);
+    if (!hora.has(x[0]) && x[1]) hora.set(x[0], String(x[1]).slice(0, 2));
+    const pr = info.get(x[0]); if (!pr || x[6] > pr.n) info.set(x[0], { c: x[2] || '', a: x[5] || '', n: x[6], h: String(x[1] || '').slice(0, 2) });
+  }
   const L = [0, 0, 0, 0, 0, 0, 0];
   for (const n of nv.values()) for (let k = 0; k <= n; k++) L[k] += 1;
-  const cub = new Map();
-  for (const c of f.cubo || []) { const k = [c[0] || '', c[2] || '', Math.min(c[4], 6)].join('\u0001'); cub.set(k, (cub.get(k) || 0) + (c[5] || 0)); }
+  // Hora a hora (teléfonos únicos, en la hora de su mejor llamada): m marcados · c contacto · e efectivo · u útil · i interesado · v venta OCM
+  const hr = {};
+  for (const [t, n] of nv) { const h = hora.get(t); if (!h) continue; const x = (hr[h] ??= { m: 0, c: 0, e: 0, u: 0, i: 0, v: 0 }); x.m += 1; if (n >= 2) x.c += 1; if (n >= 3) x.e += 1; if (n >= 4) x.u += 1; if (n >= 5) x.i += 1; if (n >= 6) x.v += 1; }
+  const cub = new Map(), cub2 = new Map();
+  for (const c of f.cubo || []) {
+    const k = [c[0] || '', c[2] || '', Math.min(c[4], 6)].join('\u0001'); cub.set(k, (cub.get(k) || 0) + (c[5] || 0));
+    // Llamadas por canal, asesor, tipificación, etapa y hora: sirve para el embudo con filtros y el detalle de "por qué se quedaron"
+    const k2 = [c[0] || '', c[2] || '', c[3] || '', Math.min(c[4], 6), c[6] || ''].join('\u0001'); cub2.set(k2, (cub2.get(k2) || 0) + (c[5] || 0));
+  }
   const cubo = [...cub.entries()].map(([k, n]) => { const p = k.split('\u0001'); return [p[0], p[1], +p[2], n]; });
+  const tips = [...cub2.entries()].map(([k, n]) => { const p = k.split('\u0001'); return [p[0], p[1], p[2], +p[3], n, p[4]]; });
   const partes = (t) => String(t || '').split(/[\/,;|]|\sy\s/i).map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length >= 7);
   const vm = [];
   for (const v of await db.ventasCreadasEntre(isoColombia(f.dia, false), isoColombia(f.dia, true))) {
     const t = partes(v.telefono).find((x) => nv.has(x)); if (!t) continue;
-    const x = info.get(t) || {}; vm.push([x.c || '', x.a || '']);
+    const x = info.get(t) || {}; vm.push([x.c || '', x.a || '', new Date(Date.parse(v.created_at) - 5 * 3600e3).toISOString().slice(11, 13)]);
   }
   const intsTel = [...nv.entries()].filter(([, n]) => n >= 5).map(([t]) => t);
   const ini = sumarDias(f.dia, -30), fin = sumarDias(f.dia, 1);
   const marce = intsTel.length ? await db.marcePorTelefonos(intsTel) : { interesados: [], ventas: [] };
   const conReg = new Set();
   for (const r of [...marce.interesados, ...marce.ventas]) { const d = new Date(Date.parse(r.created_at) - 5 * 3600e3).toISOString().slice(0, 10); if (d >= ini && d <= fin) for (const t of partes(r.telefono)) conReg.add(t); }
-  const ints = intsTel.map((t) => { const x = info.get(t) || {}; return [x.c || '', x.a || '', conReg.has(t) ? 1 : 0]; });
-  return { v: 1, L, cubo, vm, ints, calc: new Date().toISOString() };
+  const ints = intsTel.map((t) => { const x = info.get(t) || {}; return [x.c || '', x.a || '', conReg.has(t) ? 1 : 0, x.h || '']; });
+  return { v: 2, L, hr, cubo, tips, vm, ints, calc: new Date().toISOString() };
 }
+// Un día ya compactado (sin detalle) no se puede recalcular: se deja su resumen
+const resumenVencido = (f) => !f.resumen || (!f.resumen.compacto && ((f.resumen.v || 1) < 2 || String(f.resumen.calc || '') < sumarDias(f.dia, 2)));
+async function completarResumenes(filas, limiteMs = 20000) {
+  const pend = filas.filter(resumenVencido);
+  const t0 = Date.now(); let hechos = 0;
+  for (const f of pend) {
+    if (Date.now() - t0 > limiteMs) break;
+    try {
+      const full = await db.leerOcmFila(f.dia, f.campana);
+      if (!(full.filas || []).length && !full.marcados && f.resumen) { hechos += 1; continue; } // compactado
+      f.resumen = await calcularResumenOcm(full); await db.guardarOcmResumen(f.dia, f.campana, f.resumen); hechos += 1;
+    } catch (e) { console.error('resumen OCM', f.dia, f.campana, e.message); hechos += 1; }
+  }
+  return pend.length - hechos;
+}
+const ERR_RES = (err) => (/resumen/.test(err.message) ? 'Falta correr supabase_ocm_resumen.sql en Supabase.' : ERR_OCM(err));
 app.get('/api/panel/ocm/historico', exigirClave, cachear(300000), async (req, res) => {
   try {
     const hasta = /^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta || '') ? req.query.hasta : hoyCO();
     const filas = await db.leerOcmResumenes(hasta);
-    // Se recalcula si no tiene resumen o si se calculó antes de cerrar el día siguiente (los asesores aún pueden registrar en Marce)
-    const pend = filas.filter((f) => !f.resumen || String(f.resumen.calc || '') < sumarDias(f.dia, 2));
-    const t0 = Date.now(); let hechos = 0;
-    for (const f of pend) {
-      if (Date.now() - t0 > 20000) break;
-      try { f.resumen = await calcularResumenOcm(await db.leerOcmFila(f.dia, f.campana)); await db.guardarOcmResumen(f.dia, f.campana, f.resumen); hechos += 1; }
-      catch (e) { console.error('resumen OCM', f.dia, f.campana, e.message); hechos += 1; }
-    }
-    const pendientes = pend.length - hechos;
+    const pendientes = await completarResumenes(filas);
     if (pendientes > 0) res.locals.guardarCache = null; // no guardar en caché una respuesta incompleta
     res.json({ dias: filas.filter((f) => f.resumen).map((f) => ({ dia: f.dia, campana: f.campana, total: f.total, r: f.resumen })), pendientes });
-  } catch (err) {
-    res.status(500).json({ error: /resumen/.test(err.message) ? 'Falta correr supabase_ocm_resumen.sql en Supabase.' : ERR_OCM(err) });
-  }
+  } catch (err) { res.status(500).json({ error: ERR_RES(err) }); }
+});
+// Embudo de varios días en modo liviano: solo los valores de cada día (no los teléfonos)
+app.get('/api/panel/ocm/resumen', exigirClave, cachear(180000), async (req, res) => {
+  try {
+    const { desde, hasta } = req.query;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde || '') || !/^\d{4}-\d{2}-\d{2}$/.test(hasta || '')) return res.status(400).json({ error: 'Fechas inválidas.' });
+    const filas = await db.leerOcmResumenes(hasta, desde);
+    const pendientes = await completarResumenes(filas);
+    if (pendientes > 0) res.locals.guardarCache = null;
+    res.json({ dias: filas.filter((f) => f.resumen).map((f) => ({ dia: f.dia, campana: f.campana, total: f.total, actualizado: f.actualizado, r: f.resumen })), pendientes });
+  } catch (err) { res.status(500).json({ error: ERR_RES(err) }); }
+});
+// Compactar: a los días anteriores a una fecha se les borra el detalle (teléfonos) y queda solo el resumen. Libera espacio en Supabase.
+app.post('/api/panel/ocm/compactar', exigirClave, async (req, res) => {
+  try {
+    const antes = /^\d{4}-\d{2}-\d{2}$/.test(req.body?.antesDe || '') ? req.body.antesDe : null;
+    if (!antes) return res.status(400).json({ error: 'Falta la fecha.' });
+    const filas = await db.leerOcmResumenes(sumarDias(antes, -1));
+    await completarResumenes(filas, 60000);
+    let n = 0;
+    for (const f of filas) if (f.resumen && (f.resumen.v || 1) >= 2 && !resumenVencido(f)) { await db.compactarOcmDia(f.dia, f.campana, f.resumen); n += 1; }
+    res.json({ ok: true, compactados: n, sinResumen: filas.filter((f) => !f.resumen || (f.resumen.v || 1) < 2).length });
+  } catch (err) { res.status(500).json({ error: ERR_RES(err) }); }
 });
 app.post('/api/panel/ocm/borrar', exigirClave, async (req, res) => {
   try {
@@ -2325,7 +2382,7 @@ app.get('/api/panel/bases', exigirClave, cachear(120000), async (req, res) => {
     try { for (const a of await db.listarAsesores()) asesores[String(a.cedula)] = a.nombre; } catch (e) { console.error('bases asesores:', e.message); }
     // Ventas registradas en Marce ese día (para cuadrar contra las ventas tipificadas en OCM)
     let ventasDia = [];
-    try { ventasDia = (await db.ventasDelDia(dia)).map((v) => ({ tels: partes(v.telefono), hora: v.created_at ? new Date(Date.parse(v.created_at) - 5 * 3600 * 1000).toISOString().slice(11, 13) : '', asesor: v.asesor, cliente: v.nombre_cliente, ot: v.numero_ot, tipo: v.tipo_venta || v.datos?.tipo_venta || '' })); } catch (e) { console.error('bases ventasDia:', e.message); }
+    try { ventasDia = (await db.ventasDelDia(dia)).map((v) => ({ tels: partes(v.telefono), hora: v.created_at ? new Date(Date.parse(v.created_at) - 5 * 3600 * 1000).toISOString().slice(11, 13) : '', asesor: v.asesor, cliente: v.nombre_cliente, ot: v.numero_ot, tipo: v.tipo_venta || v.datos?.tipo_venta || '', linea: esMovil(v) ? 'movil' : 'hogar' })); } catch (e) { console.error('bases ventasDia:', e.message); }
     let interesadosDia = [];
     try { interesadosDia = (await db.interesadosDelDia(dia)).map((i) => ({ tels: partes(i.telefono), asesor: i.asesor, resultado: i.resultado || '' })); } catch (e) { console.error('bases interesadosDia:', e.message); }
     res.json({ dias, ocmDias, dia, bases, asesores, ventasDia, interesadosDia, ocm: ocm.map((o) => ({ campana: o.campana, total: o.total, archivo: o.archivo, actualizado: o.actualizado, marcados: o.marcados || '', filas: o.filas || [], cubo: o.cubo || [] })), cruce });
